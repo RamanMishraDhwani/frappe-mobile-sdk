@@ -8,6 +8,12 @@ class DocField {
   final String fieldtype;
   final String? label;
   final bool reqd;
+
+  /// Frappe `non_negative=1` on an Int / Float / Currency / Percent field: the
+  /// server rejects a negative value on save (`Document._validate_non_negative`),
+  /// so the form rejects it first. Ignored on other fieldtypes, as in Frappe.
+  final bool nonNegative;
+
   final bool readOnly;
   final bool hidden;
   final String? options;
@@ -74,6 +80,7 @@ class DocField {
     'fieldtype',
     'label',
     'reqd',
+    'non_negative', 'nonNegative',
     'read_only', 'readOnly',
     'hidden',
     'options',
@@ -114,6 +121,7 @@ class DocField {
     required this.fieldtype,
     this.label,
     this.reqd = false,
+    this.nonNegative = false,
     this.readOnly = false,
     this.hidden = false,
     this.options,
@@ -163,6 +171,8 @@ class DocField {
       fieldtype: json['fieldtype'] as String? ?? 'Data',
       label: json['label'] as String?,
       reqd: parseBool(json['reqd']),
+      nonNegative:
+          parseBool(json['non_negative']) || parseBool(json['nonNegative']),
       readOnly: parseBool(json['read_only']) || parseBool(json['readOnly']),
       hidden: parseBool(json['hidden']),
       options: json['options'] as String?,
@@ -232,6 +242,9 @@ class DocField {
       'fieldtype': fieldtype,
       if (label != null) 'label': label,
       'reqd': reqd ? 1 : 0,
+      // Always emitted: DocTypeMeta.toJson() is what MetaService persists, so
+      // dropping the key would lose the flag on the next cold start.
+      'non_negative': nonNegative ? 1 : 0,
       'read_only': readOnly ? 1 : 0,
       'hidden': hidden ? 1 : 0,
       if (options != null) 'options': options,
@@ -259,6 +272,28 @@ class DocField {
       'cannot_add_rows': cannotAddRows ? 1 : 0,
       'cannot_delete_rows': cannotDeleteRows ? 1 : 0,
     };
+  }
+
+  /// The fieldtypes Frappe applies `non_negative` to.
+  static const Set<String> nonNegativeFieldtypes = {
+    'Int',
+    'Float',
+    'Currency',
+    'Percent',
+  };
+
+  /// True when Frappe would reject [value] for this field on save: the flag is
+  /// set, the fieldtype is numeric, and the value is below zero. Mirrors
+  /// Frappe's `flt(value) < 0`: commas are dropped, and a value that does not
+  /// parse counts as 0.
+  bool rejectsAsNegative(dynamic value) {
+    if (!nonNegative || !nonNegativeFieldtypes.contains(fieldtype)) {
+      return false;
+    }
+    final n = value is num
+        ? value
+        : num.tryParse('${value ?? ''}'.replaceAll(',', '').trim());
+    return n != null && n < 0;
   }
 
   /// Check if this is a layout field (Section Break, Column Break, Tab Break)

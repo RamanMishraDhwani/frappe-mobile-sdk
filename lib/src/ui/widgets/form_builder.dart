@@ -1260,6 +1260,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
       fieldtype: field.fieldtype,
       label: field.label,
       reqd: effectiveReqd,
+      nonNegative: field.nonNegative,
       readOnly: effectiveReadOnly,
       hidden: field.hidden,
       options: field.options,
@@ -2335,6 +2336,40 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
           }
           st?.fields[f.fieldname]?.invalidate(
             sdkTr('{0} is required', [f.displayLabel]),
+          );
+        }
+      });
+      widget.onValidationFailed?.call();
+      return;
+    }
+
+    // Frappe-parity non-negative sweep (`Document._validate_non_negative`)
+    // over the same COMPLETE payload, for the same reason as the mandatory
+    // sweep above: a flagged field on a tab that was never opened has no
+    // mounted validator, so a negative value would save locally and only be
+    // rejected by the server at sync time.
+    final negative = <DocField>[
+      for (final field in widget.meta.fields)
+        if (field.fieldname != null &&
+            completeFormData.containsKey(field.fieldname) &&
+            field.rejectsAsNegative(completeFormData[field.fieldname]))
+          field,
+    ];
+    if (negative.isNotEmpty) {
+      final tabIndex = _fieldTabIndex[negative.first.fieldname];
+      if (tabIndex != null &&
+          _tabs.length > 1 &&
+          _tabController.index != tabIndex) {
+        setState(() {
+          _tabController.index = tabIndex;
+        });
+      }
+      Future.delayed(const Duration(milliseconds: 150), () {
+        if (!mounted) return;
+        final st = _formKey.currentState;
+        for (final f in negative) {
+          st?.fields[f.fieldname]?.invalidate(
+            sdkTr('Value cannot be negative for {0}', [f.displayLabel]),
           );
         }
       });
