@@ -36,6 +36,14 @@ class DocField {
   /// build column lists must skip it.
   final bool isVirtual;
 
+  /// Frappe `set_only_once=1`: the value can be set while the document is new
+  /// and is read-only once it is saved (Desk `get_field_display_status`; the
+  /// server rejects a change with `CannotChangeConstantError`). Read from
+  /// [rawData], so it survives `toJson`/`fromJson` round trips.
+  bool get setOnlyOnce =>
+      frappe_json.parseBool(rawData?['set_only_once']) ||
+      frappe_json.parseBool(rawData?['setOnlyOnce']);
+
   /// The raw docfield payload this instance was parsed from, if any.
   ///
   /// Retained so [toJson] can round-trip the Frappe docfield properties this

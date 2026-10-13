@@ -6,6 +6,7 @@ import '../../models/doc_type_meta.dart';
 import '../../models/session_user.dart';
 import '../../utils/date_helpers.dart';
 import '../../utils/depends_on_evaluator.dart';
+import '../../utils/doc_identity.dart';
 import '../../utils/field_defaults.dart';
 import 'dependency_graph.dart';
 import 'field_ui_state.dart';
@@ -121,6 +122,9 @@ class FormController extends ChangeNotifier {
     'idx',
     '__islocal',
     '__unsaved',
+    // A record read from the offline store names itself here, not in `name`;
+    // the saved-document checks (`__islocal`, set_only_once) need to see it.
+    'server_name',
   };
 
   // ── construction helpers ────────────────────────────────────────────────
@@ -159,8 +163,9 @@ class FormController extends ChangeNotifier {
     //
     // An explicit `__islocal` from the host wins — it was seeded above.
     if (!_rawValues.containsKey('__islocal')) {
-      final docName = _rawValues['name'];
-      if (docName == null || docName.toString().isEmpty) {
+      // A record read from the offline store carries `server_name`, not
+      // `name`; it is saved all the same.
+      if (!isSavedOnServer(_rawValues)) {
         _rawValues['__islocal'] = 1;
       }
     }
@@ -469,7 +474,13 @@ class FormController extends ChangeNotifier {
       (e) => e.fieldname == field,
       orElse: () => DocField(fieldtype: '_missing_'),
     );
-    if (!_isDynamic(f) && !f.reqd && !f.readOnly) return FieldUiState.editable;
+    if (!_isDynamic(f) &&
+        !f.reqd &&
+        !f.readOnly &&
+        !f.isVirtual &&
+        !f.setOnlyOnce) {
+      return FieldUiState.editable;
+    }
     // `depends_on` keeps the `defaultOnError: true` default — an unparseable
     // expression SHOWS the field rather than silently hiding data.
     final visible = DependsOnEvaluator.evaluate(
@@ -493,8 +504,12 @@ class FormController extends ChangeNotifier {
           false,
           parentData: _parentData,
         );
+    // Desk get_field_display_status: a virtual field is never written, and a
+    // set_only_once field is read-only once the document is saved.
     final readOnly =
         f.readOnly ||
+        f.isVirtual ||
+        (f.setOnlyOnce && isSavedOnServer(_rawValues)) ||
         DependsOnEvaluator.evaluate2(
           f.readOnlyDependsOn,
           _rawValues,

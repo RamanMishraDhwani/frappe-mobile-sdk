@@ -16,6 +16,7 @@ import '../../services/link_field_coordinator.dart';
 import '../../models/session_user.dart';
 import '../../utils/date_helpers.dart';
 import '../../utils/depends_on_evaluator.dart';
+import '../../utils/doc_identity.dart';
 import '../../utils/field_defaults.dart';
 import '../../utils/field_normalizer.dart';
 import '../../utils/sdk_log.dart';
@@ -1106,6 +1107,10 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
 
   bool _isFieldReadOnly(DocField field) =>
       field.readOnly ||
+      // Desk get_field_display_status: a virtual field is never written, and
+      // a set_only_once field is read-only once the document is saved.
+      field.isVirtual ||
+      (field.setOnlyOnce && isSavedOnServer(widget.initialData)) ||
       // Likewise, never lock a field because an expression failed to parse.
       _evaluateDepends(field.readOnlyDependsOn, false, onError: false);
 
