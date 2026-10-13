@@ -1,6 +1,7 @@
 import '../models/doc_field.dart';
 import '../models/session_user.dart';
 import 'date_helpers.dart';
+import 'frappe_reserved_fields.dart';
 
 /// The value a new document starts with for [field], the way Desk sets it
 /// (`frappe.model.get_default_value`, then `set_default_values`).
@@ -55,20 +56,34 @@ Object? typedDefaultValue(
       return (raw == null || raw.isEmpty) ? null : _flt(raw);
     case 'Select':
       if (raw != null && raw.isNotEmpty) return raw;
-      // No default: Desk starts on the first option (set_default_values),
-      // which is blank when the list starts with an empty line.
-      final options = field.options;
-      if (options == null ||
-          options.isEmpty ||
-          options == '[Select]' ||
-          options == 'Loading...') {
-        return null;
-      }
-      final first = options.split('\n').first;
-      return first.isEmpty ? null : first;
+      return _firstSelectOption(field);
     default:
       return raw;
   }
+}
+
+/// Desk starts a Select with no default on its first option
+/// (set_default_values), blank when the list starts with an empty line.
+///
+/// Left to [SelectField], which already preselects a sole option and reports
+/// it as a change: a list with one option, a reserved field such as
+/// `naming_series` (never preselected), and a multi-select.
+String? _firstSelectOption(DocField field) {
+  if (field.allowMultiple || isFrappeReservedField(field.fieldname)) {
+    return null;
+  }
+  final options = field.options;
+  if (options == null ||
+      options.isEmpty ||
+      options == '[Select]' ||
+      options == 'Loading...') {
+    return null;
+  }
+  final lines = options.split('\n');
+  final first = lines.first;
+  if (first.trim().isEmpty) return null;
+  if (lines.where((l) => l.trim().isNotEmpty).length < 2) return null;
+  return first;
 }
 
 final RegExp _leadingInt = RegExp(r'^\s*[+-]?\d+');
