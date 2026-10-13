@@ -14,6 +14,7 @@ import '../../constants/field_types.dart';
 import '../../services/link_option_service.dart';
 import '../../services/link_field_coordinator.dart';
 import '../../utils/depends_on_evaluator.dart';
+import '../../utils/field_defaults.dart';
 import '../../utils/field_normalizer.dart';
 import '../../utils/sdk_log.dart';
 import '../../utils/translate.dart';
@@ -605,21 +606,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
     _formKey = GlobalKey<FormBuilderState>();
 
     _formData.addAll(widget.initialData ?? {});
-
-    for (final field in widget.meta.fields) {
-      if (field.fieldname != null && !_formData.containsKey(field.fieldname)) {
-        final defVal = field.defaultValue;
-        if (defVal != null &&
-            field.fieldtype == 'Date' &&
-            defVal.toLowerCase() == 'today') {
-          final now = DateTime.now();
-          _formData[field.fieldname!] =
-              '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-        } else {
-          _formData[field.fieldname!] ??= defVal;
-        }
-      }
-    }
+    _seedDefaults();
 
     _prefetchChildRowMeta();
 
@@ -1611,7 +1598,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
     final initialValue =
         _formData[field.fieldname] ??
         widget.initialData?[field.fieldname] ??
-        field.defaultValue;
+        typedDefaultValue(field);
 
     final fieldWidget = _fieldFactory.createField(
       field: fieldWithEffectiveProps,
@@ -2021,13 +2008,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
       if (widget.initialData != null) {
         _formData.addAll(widget.initialData!);
       }
-      for (final field in widget.meta.fields) {
-        if (field.fieldname != null &&
-            !field.hidden &&
-            !_formData.containsKey(field.fieldname)) {
-          _formData[field.fieldname!] ??= field.defaultValue;
-        }
-      }
+      _seedDefaults();
       if (widget.linkOptionService != null && widget.useLinkFieldCoordinator) {
         _linkFieldCoordinator = LinkFieldCoordinator(
           meta: widget.meta,
@@ -2173,7 +2154,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         completeFormData[field.fieldname!] =
             formValues[field.fieldname] ??
             widget.initialData?[field.fieldname] ??
-            field.defaultValue ??
+            typedDefaultValue(field) ??
             (field.fieldtype == 'Check'
                 ? 0
                 : (field.fieldtype == 'Table' ||
@@ -2371,6 +2352,28 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
   /// Warms [_childRowMeta] for every `Table` field so the submit-time row
   /// sweep can run synchronously. Failures are swallowed on purpose: a table
   /// whose meta never arrives is simply not row-checked.
+  /// Gives every field the form has no value for its default, as Desk does
+  /// for a new document (`frappe.model.set_default_values`): typed by field
+  /// type ([typedDefaultValue]), `Today` on a Date resolved to today's date,
+  /// and hidden fields included. Runs on first build and again whenever the
+  /// form is reloaded with new data, so both start the same way.
+  void _seedDefaults() {
+    for (final field in widget.meta.fields) {
+      final name = field.fieldname;
+      if (name == null || _formData.containsKey(name)) continue;
+      final defVal = field.defaultValue;
+      if (defVal != null &&
+          field.fieldtype == 'Date' &&
+          defVal.toLowerCase() == 'today') {
+        final now = DateTime.now();
+        _formData[name] =
+            '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      } else {
+        _formData[name] = typedDefaultValue(field);
+      }
+    }
+  }
+
   void _prefetchChildRowMeta() {
     final getMeta = widget.getMeta;
     if (getMeta == null) return;
@@ -2487,7 +2490,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         complete[field.fieldname!] =
             formValues[field.fieldname] ??
             widget.initialData?[field.fieldname] ??
-            field.defaultValue ??
+            typedDefaultValue(field) ??
             (field.fieldtype == 'Check'
                 ? 0
                 : (field.fieldtype == 'Table' ||

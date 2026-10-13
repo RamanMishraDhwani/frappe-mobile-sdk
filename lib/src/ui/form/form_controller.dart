@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import '../../models/doc_field.dart';
 import '../../models/doc_type_meta.dart';
 import '../../utils/depends_on_evaluator.dart';
+import '../../utils/field_defaults.dart';
 import 'dependency_graph.dart';
 import 'field_ui_state.dart';
 import 'form_validators.dart';
@@ -171,7 +172,7 @@ class FormController extends ChangeNotifier {
         _rawValues[name] =
             '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
       } else {
-        _rawValues[name] = def;
+        _rawValues[name] = typedDefaultValue(f);
       }
     }
   }
@@ -660,7 +661,7 @@ class FormController extends ChangeNotifier {
               ? 0
               : (f.fieldtype == 'Table' || f.fieldtype == 'Table MultiSelect')
               ? <dynamic>[]
-              : (f.defaultValue ?? ''));
+              : (typedDefaultValue(f) ?? ''));
     }
     // also carry non-null companion/extra keys present in raw values, minus the
     // std fields seeded purely so depends_on can read them (see _stdEvalFields)
