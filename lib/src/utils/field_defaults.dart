@@ -15,7 +15,8 @@ import 'date_helpers.dart';
 ///   fills it on insert instead of receiving the token's text.
 ///
 /// The value is then typed: Int and Check go through `cint`, Float and
-/// Currency through `flt`, every other type keeps the text. Desk assigns a
+/// Currency through `flt`, every other type keeps the text. A Select with no
+/// default starts on its first option. Desk assigns a
 /// default only when its text is non-empty (`if (v)`), so an empty default on
 /// a numeric field returns null.
 ///
@@ -52,6 +53,19 @@ Object? typedDefaultValue(
     case 'Float':
     case 'Currency':
       return (raw == null || raw.isEmpty) ? null : _flt(raw);
+    case 'Select':
+      if (raw != null && raw.isNotEmpty) return raw;
+      // No default: Desk starts on the first option (set_default_values),
+      // which is blank when the list starts with an empty line.
+      final options = field.options;
+      if (options == null ||
+          options.isEmpty ||
+          options == '[Select]' ||
+          options == 'Loading...') {
+        return null;
+      }
+      final first = options.split('\n').first;
+      return first.isEmpty ? null : first;
     default:
       return raw;
   }
