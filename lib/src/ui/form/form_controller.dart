@@ -5,10 +5,10 @@ import '../../models/doc_field.dart';
 import '../../models/doc_type_meta.dart';
 import '../../models/session_user.dart';
 import '../../utils/data_option_validation.dart';
-import '../../utils/date_helpers.dart';
 import '../../utils/depends_on_evaluator.dart';
 import '../../utils/doc_identity.dart';
 import '../../utils/field_defaults.dart';
+import '../../utils/frappe_save_value.dart';
 import 'dependency_graph.dart';
 import 'field_ui_state.dart';
 import 'form_validators.dart';
@@ -687,13 +687,12 @@ class FormController extends ChangeNotifier {
     _rawValues.forEach((k, v) {
       if (v != null && !_stdEvalFields.contains(k)) complete[k] = v;
     });
-    // Date, Datetime and Time as Frappe saves them: empty is null, not ''.
+    // Values the way Desk holds them at save: dates in Frappe's format and
+    // empty as null, numbers with a precision rounded to it.
     for (final f in _meta.fields) {
       final name = f.fieldname;
-      if (name != null &&
-          temporalFieldtypes.contains(f.fieldtype) &&
-          complete.containsKey(name)) {
-        complete[name] = frappeTemporalValue(f.fieldtype, complete[name]);
+      if (name != null && complete.containsKey(name)) {
+        complete[name] = frappeSaveValue(f, complete[name]);
       }
     }
 

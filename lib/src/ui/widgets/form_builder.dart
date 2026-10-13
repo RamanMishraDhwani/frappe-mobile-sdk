@@ -19,6 +19,7 @@ import '../../utils/depends_on_evaluator.dart';
 import '../../utils/doc_identity.dart';
 import '../../utils/field_defaults.dart';
 import '../../utils/field_normalizer.dart';
+import '../../utils/frappe_save_value.dart';
 import '../../utils/sdk_log.dart';
 import '../../utils/translate.dart';
 import '../../services/mobile_creation_capture.dart';
@@ -2187,7 +2188,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         completeFormData[entry.key] = entry.value;
       }
     }
-    _toFrappeTemporal(completeFormData);
+    _toFrappeSaveValues(completeFormData);
 
     // Drop fields the user can't actually see from the save payload,
     // mirroring Frappe Desk's behaviour where hidden-by-depends_on fields
@@ -2515,7 +2516,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         complete[entry.key] = entry.value;
       }
     }
-    _toFrappeTemporal(complete);
+    _toFrappeSaveValues(complete);
     return complete;
   }
 
@@ -2536,15 +2537,14 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
     return out;
   }
 
-  /// Date, Datetime and Time values in [data] as Frappe saves them: empty is
-  /// null, not `''`.
-  void _toFrappeTemporal(Map<String, dynamic> data) {
+  /// Values in [data] the way Desk holds them at save ([frappeSaveValue]):
+  /// dates in Frappe's format and empty as null, numbers with a precision
+  /// rounded to it.
+  void _toFrappeSaveValues(Map<String, dynamic> data) {
     for (final f in widget.meta.fields) {
       final name = f.fieldname;
-      if (name != null &&
-          temporalFieldtypes.contains(f.fieldtype) &&
-          data.containsKey(name)) {
-        data[name] = frappeTemporalValue(f.fieldtype, data[name]);
+      if (name != null && data.containsKey(name)) {
+        data[name] = frappeSaveValue(f, data[name]);
       }
     }
   }
