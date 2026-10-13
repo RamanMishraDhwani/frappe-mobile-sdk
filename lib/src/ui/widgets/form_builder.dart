@@ -13,6 +13,7 @@ import '../../models/link_filter_result.dart';
 import '../../constants/field_types.dart';
 import '../../services/link_option_service.dart';
 import '../../services/link_field_coordinator.dart';
+import '../../utils/date_helpers.dart';
 import '../../utils/depends_on_evaluator.dart';
 import '../../utils/field_defaults.dart';
 import '../../utils/field_normalizer.dart';
@@ -2173,6 +2174,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         completeFormData[entry.key] = entry.value;
       }
     }
+    _toFrappeTemporal(completeFormData);
 
     // Drop fields the user can't actually see from the save payload,
     // mirroring Frappe Desk's behaviour where hidden-by-depends_on fields
@@ -2504,7 +2506,38 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         complete[entry.key] = entry.value;
       }
     }
+    _toFrappeTemporal(complete);
     return complete;
+  }
+
+  /// The form-wide initial values handed to [FormBuilder]. A date, datetime or
+  /// time picker falls back to this map when its own value is empty, and it can
+  /// only hold a [DateTime], so stored text is converted here and an empty
+  /// value becomes null (`''` used to crash the field on re-open).
+  Map<String, dynamic> _pickerSafeValues(Map<String, dynamic> values) {
+    final out = Map<String, dynamic>.from(values);
+    for (final f in widget.meta.fields) {
+      final name = f.fieldname;
+      if (name != null &&
+          temporalFieldtypes.contains(f.fieldtype) &&
+          out.containsKey(name)) {
+        out[name] = pickerDateTime(f.fieldtype, out[name]);
+      }
+    }
+    return out;
+  }
+
+  /// Date, Datetime and Time values in [data] as Frappe saves them: empty is
+  /// null, not `''`.
+  void _toFrappeTemporal(Map<String, dynamic> data) {
+    for (final f in widget.meta.fields) {
+      final name = f.fieldname;
+      if (name != null &&
+          temporalFieldtypes.contains(f.fieldtype) &&
+          data.containsKey(name)) {
+        data[name] = frappeTemporalValue(f.fieldtype, data[name]);
+      }
+    }
   }
 
   /// Builds current form data (same structure as submit). Used for dirty detection.
@@ -2521,7 +2554,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
     widget.registerSubmit?.call(_handleReactiveSubmit);
     return FormBuilder(
       key: _formKey,
-      initialValue: _controller!.values,
+      initialValue: _pickerSafeValues(_controller!.values),
       child: Column(
         children: [
           _buildTabHeader(formStyle),
@@ -2765,7 +2798,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
 
     return FormBuilder(
       key: _formKey,
-      initialValue: Map<String, dynamic>.from(_formData),
+      initialValue: _pickerSafeValues(_formData),
       child: Column(
         children: [
           if (_linkOptionsLoading)

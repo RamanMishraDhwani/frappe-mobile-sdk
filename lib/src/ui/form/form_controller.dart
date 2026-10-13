@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import '../../models/doc_field.dart';
 import '../../models/doc_type_meta.dart';
+import '../../utils/date_helpers.dart';
 import '../../utils/depends_on_evaluator.dart';
 import '../../utils/field_defaults.dart';
 import 'dependency_graph.dart';
@@ -668,6 +669,15 @@ class FormController extends ChangeNotifier {
     _rawValues.forEach((k, v) {
       if (v != null && !_stdEvalFields.contains(k)) complete[k] = v;
     });
+    // Date, Datetime and Time as Frappe saves them: empty is null, not ''.
+    for (final f in _meta.fields) {
+      final name = f.fieldname;
+      if (name != null &&
+          temporalFieldtypes.contains(f.fieldtype) &&
+          complete.containsKey(name)) {
+        complete[name] = frappeTemporalValue(f.fieldtype, complete[name]);
+      }
+    }
 
     // The payload must not carry the std fields, but the visibility sweep below
     // MUST still see them. Evaluating `eval:doc.docstatus == 0` against a scope
