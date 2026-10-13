@@ -13,6 +13,7 @@ import '../../models/link_filter_result.dart';
 import '../../constants/field_types.dart';
 import '../../services/link_option_service.dart';
 import '../../services/link_field_coordinator.dart';
+import '../../models/session_user.dart';
 import '../../utils/date_helpers.dart';
 import '../../utils/depends_on_evaluator.dart';
 import '../../utils/field_defaults.dart';
@@ -218,6 +219,11 @@ class FrappeFormBuilder extends StatefulWidget {
   /// row-level capture.
   final MobileCreationCapture? creationCapture;
 
+  /// The signed-in user, for `__user`, `user` and `user_fullname` defaults on
+  /// a new document (see [typedDefaultValue]). Null leaves those fields unset
+  /// for the server to fill on insert.
+  final SessionUser? sessionUser;
+
   /// Custom styling options
   final FrappeFormStyle? style;
 
@@ -347,6 +353,7 @@ class FrappeFormBuilder extends StatefulWidget {
     this.useLinkFieldCoordinator = true,
     this.customFieldFactory,
     this.creationCapture,
+    this.sessionUser,
     this.childRowNoticeBuilder,
     this.style,
     this.uploadFile,
@@ -663,6 +670,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
             meta: widget.meta,
             initialData: widget.initialData,
             parentData: widget.parentFormData,
+            sessionUser: widget.sessionUser,
           );
       _ownsController = widget.controller == null;
       // A host-supplied controller never saw the constructor argument above, so
@@ -1599,7 +1607,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
     final initialValue =
         _formData[field.fieldname] ??
         widget.initialData?[field.fieldname] ??
-        typedDefaultValue(field);
+        _defaultFor(field);
 
     final fieldWidget = _fieldFactory.createField(
       field: fieldWithEffectiveProps,
@@ -2155,7 +2163,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         completeFormData[field.fieldname!] =
             formValues[field.fieldname] ??
             widget.initialData?[field.fieldname] ??
-            typedDefaultValue(field) ??
+            _defaultFor(field) ??
             (field.fieldtype == 'Check'
                 ? 0
                 : (field.fieldtype == 'Table' ||
@@ -2363,18 +2371,14 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
     for (final field in widget.meta.fields) {
       final name = field.fieldname;
       if (name == null || _formData.containsKey(name)) continue;
-      final defVal = field.defaultValue;
-      if (defVal != null &&
-          field.fieldtype == 'Date' &&
-          defVal.toLowerCase() == 'today') {
-        final now = DateTime.now();
-        _formData[name] =
-            '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-      } else {
-        _formData[name] = typedDefaultValue(field);
-      }
+      _formData[name] = _defaultFor(field);
     }
   }
+
+  /// [field]'s default for a new document: tokens resolved for
+  /// [FrappeFormBuilder.sessionUser], then typed ([typedDefaultValue]).
+  Object? _defaultFor(DocField field) =>
+      typedDefaultValue(field, user: widget.sessionUser);
 
   void _prefetchChildRowMeta() {
     final getMeta = widget.getMeta;
@@ -2492,7 +2496,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         complete[field.fieldname!] =
             formValues[field.fieldname] ??
             widget.initialData?[field.fieldname] ??
-            typedDefaultValue(field) ??
+            _defaultFor(field) ??
             (field.fieldtype == 'Check'
                 ? 0
                 : (field.fieldtype == 'Table' ||

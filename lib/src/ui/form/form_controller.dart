@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import '../../models/doc_field.dart';
 import '../../models/doc_type_meta.dart';
+import '../../models/session_user.dart';
 import '../../utils/date_helpers.dart';
 import '../../utils/depends_on_evaluator.dart';
 import '../../utils/field_defaults.dart';
@@ -42,9 +43,11 @@ class FormController extends ChangeNotifier {
     Map<String, dynamic>? initialData,
     Map<String, dynamic>? parentData,
     DateTime Function()? now,
+    SessionUser? sessionUser,
   }) : _meta = meta,
        _parentData = parentData,
-       _now = now ?? DateTime.now {
+       _now = now ?? DateTime.now,
+       _sessionUser = sessionUser {
     _graph = DependencyGraph.build(meta);
     assert(() {
       _graph.assertNoValueCycles();
@@ -56,6 +59,9 @@ class FormController extends ChangeNotifier {
 
   DocTypeMeta _meta; // mutable: reset({meta}) rebuilds against a new schema
   final DateTime Function() _now;
+
+  /// For `__user` / `user_fullname` defaults ([typedDefaultValue]).
+  final SessionUser? _sessionUser;
   late DependencyGraph _graph;
 
   /// Parent document values, supplying `parent` to depends_on expressions on a
@@ -165,16 +171,7 @@ class FormController extends ChangeNotifier {
         _rawValues[name] = initialData[name];
         continue;
       }
-      final def = f.defaultValue;
-      if (def != null &&
-          f.fieldtype == 'Date' &&
-          def.toLowerCase() == 'today') {
-        final d = _now();
-        _rawValues[name] =
-            '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-      } else {
-        _rawValues[name] = typedDefaultValue(f);
-      }
+      _rawValues[name] = typedDefaultValue(f, user: _sessionUser, now: _now);
     }
   }
 
@@ -662,7 +659,7 @@ class FormController extends ChangeNotifier {
               ? 0
               : (f.fieldtype == 'Table' || f.fieldtype == 'Table MultiSelect')
               ? <dynamic>[]
-              : (typedDefaultValue(f) ?? ''));
+              : (typedDefaultValue(f, user: _sessionUser, now: _now) ?? ''));
     }
     // also carry non-null companion/extra keys present in raw values, minus the
     // std fields seeded purely so depends_on can read them (see _stdEvalFields)

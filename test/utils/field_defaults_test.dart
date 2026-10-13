@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:frappe_mobile_sdk/src/models/doc_field.dart';
+import 'package:frappe_mobile_sdk/src/models/session_user.dart';
 import 'package:frappe_mobile_sdk/src/utils/field_defaults.dart';
 
 /// A new document's defaults, typed the way Desk types them
@@ -42,5 +43,51 @@ void main() {
     // Desk does not cast Percent in set_default_values.
     expect(d('Percent', '10'), '10');
     expect(d('Data', null), isNull);
+  });
+
+  group('tokens, as frappe.model.get_default_value resolves them', () {
+    const user = SessionUser(
+      name: 'field.user@example.com',
+      fullName: 'Field User',
+      roles: [],
+      permissions: {},
+      userDefaults: {},
+      extras: {},
+    );
+    DateTime clock() => DateTime(2026, 10, 13, 9, 5, 7);
+    Object? t(String fieldtype, String def, {SessionUser? u = user}) =>
+        typedDefaultValue(
+          DocField(fieldname: 'f', fieldtype: fieldtype, defaultValue: def),
+          user: u,
+          now: clock,
+        );
+
+    test('__user and user give the signed-in user', () {
+      expect(t('Link', '__user'), 'field.user@example.com');
+      expect(t('Data', 'user'), 'field.user@example.com');
+      expect(t('Link', 'User'), 'field.user@example.com');
+    });
+
+    test('user_fullname gives the full name', () {
+      expect(t('Data', 'user_fullname'), 'Field User');
+    });
+
+    test('now gives the current time in the field type\'s format', () {
+      expect(t('Datetime', 'now'), '2026-10-13 09:05:07');
+      expect(t('Datetime', 'Now'), '2026-10-13 09:05:07');
+      expect(t('Time', 'now'), '09:05:07');
+      expect(t('Date', 'now'), '2026-10-13');
+    });
+
+    test('Today on a Date gives today', () {
+      expect(t('Date', 'Today'), '2026-10-13');
+    });
+
+    test('a token that cannot be resolved here leaves the field unset', () {
+      // No signed-in user known: the server fills it on insert.
+      expect(t('Link', '__user', u: null), isNull);
+      // `:Doctype` reads boot defaults Desk has and the SDK does not.
+      expect(t('Link', ':Company'), isNull);
+    });
   });
 }

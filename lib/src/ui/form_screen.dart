@@ -11,6 +11,7 @@ import '../models/doc_field.dart';
 import '../models/doc_type_meta.dart';
 import '../models/document.dart';
 import '../models/link_filter_result.dart';
+import '../models/session_user.dart';
 import '../models/outbox_row.dart';
 import '../models/workflow_transition.dart';
 import '../services/link_option_service.dart';
@@ -170,6 +171,11 @@ class FormScreen extends StatefulWidget {
   /// `mobile_control` is unaffected either way.
   final MobileCreationCapture? creationCapture;
 
+  /// The signed-in user, for `__user`, `user` and `user_fullname` defaults on
+  /// a new document. Pass `FrappeSDK.sessionUser`; null leaves those fields
+  /// unset for the server to fill on insert.
+  final SessionUser? sessionUser;
+
   /// Optional callback when a Button field is pressed. Override to implement client-script logic
   /// (API calls, dialogs, form updates). When null, default behavior applies: if [field.options]
   /// has a server method path, it is called; otherwise a message is shown.
@@ -266,6 +272,7 @@ class FormScreen extends StatefulWidget {
     this.translate,
     this.initialData,
     this.creationCapture,
+    this.sessionUser,
     this.onButtonPressed,
     this.onFieldChange,
     this.validator,
@@ -551,6 +558,7 @@ class _FormScreenState extends State<FormScreen> with WidgetsBindingObserver {
           FormController(
             meta: widget.meta,
             initialData: widget.document?.data ?? widget.initialData,
+            sessionUser: widget.sessionUser,
           );
       _ownsFormController = widget.controller == null;
       widget.onControllerReady?.call(_formController!);
@@ -1593,6 +1601,7 @@ class _FormScreenState extends State<FormScreen> with WidgetsBindingObserver {
                         ? (doctype) => widget.metaService!.getMeta(doctype)
                         : null,
                     creationCapture: _capture,
+                    sessionUser: widget.sessionUser,
                     registerSubmit: (trigger) {
                       _triggerSubmit = trigger;
                       widget.registerSubmit?.call(trigger);
