@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import '../../models/doc_field.dart';
 import '../../models/doc_type_meta.dart';
 import '../../models/session_user.dart';
+import '../../utils/data_option_validation.dart';
 import '../../utils/date_helpers.dart';
 import '../../utils/depends_on_evaluator.dart';
 import '../../utils/doc_identity.dart';
@@ -591,6 +592,11 @@ class FormController extends ChangeNotifier {
         (v is! List && v is! String && v.toString().isEmpty);
     if ((f.reqd || ui.required) && missing) {
       return '${f.label ?? field} is required';
+    }
+    // Data with options Email / Phone / Name / URL: the server's checks.
+    if (f.fieldtype == 'Data' && v is String) {
+      final e = dataOptionError(f.options, v);
+      if (e != null) return e;
     }
     for (final validator in _fieldValidators[field] ?? const []) {
       final e = validator(v, _rawValues);
