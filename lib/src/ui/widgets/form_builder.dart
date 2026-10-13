@@ -13,8 +13,13 @@ import '../../models/link_filter_result.dart';
 import '../../constants/field_types.dart';
 import '../../services/link_option_service.dart';
 import '../../services/link_field_coordinator.dart';
+import '../../models/session_user.dart';
+import '../../utils/date_helpers.dart';
 import '../../utils/depends_on_evaluator.dart';
+import '../../utils/doc_identity.dart';
+import '../../utils/field_defaults.dart';
 import '../../utils/field_normalizer.dart';
+import '../../utils/frappe_save_value.dart';
 import '../../utils/sdk_log.dart';
 import '../../utils/translate.dart';
 import '../../services/mobile_creation_capture.dart';
@@ -216,6 +221,11 @@ class FrappeFormBuilder extends StatefulWidget {
   /// row-level capture.
   final MobileCreationCapture? creationCapture;
 
+  /// The signed-in user, for `__user`, `user` and `user_fullname` defaults on
+  /// a new document (see [typedDefaultValue]). Null leaves those fields unset
+  /// for the server to fill on insert.
+  final SessionUser? sessionUser;
+
   /// Custom styling options
   final FrappeFormStyle? style;
 
@@ -345,6 +355,7 @@ class FrappeFormBuilder extends StatefulWidget {
     this.useLinkFieldCoordinator = true,
     this.customFieldFactory,
     this.creationCapture,
+    this.sessionUser,
     this.childRowNoticeBuilder,
     this.style,
     this.uploadFile,
@@ -605,21 +616,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
     _formKey = GlobalKey<FormBuilderState>();
 
     _formData.addAll(widget.initialData ?? {});
-
-    for (final field in widget.meta.fields) {
-      if (field.fieldname != null && !_formData.containsKey(field.fieldname)) {
-        final defVal = field.defaultValue;
-        if (defVal != null &&
-            field.fieldtype == 'Date' &&
-            defVal.toLowerCase() == 'today') {
-          final now = DateTime.now();
-          _formData[field.fieldname!] =
-              '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-        } else {
-          _formData[field.fieldname!] ??= defVal;
-        }
-      }
-    }
+    _seedDefaults();
 
     _prefetchChildRowMeta();
 
@@ -675,6 +672,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
             meta: widget.meta,
             initialData: widget.initialData,
             parentData: widget.parentFormData,
+            sessionUser: widget.sessionUser,
           );
       _ownsController = widget.controller == null;
       // A host-supplied controller never saw the constructor argument above, so
@@ -1110,6 +1108,10 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
 
   bool _isFieldReadOnly(DocField field) =>
       field.readOnly ||
+      // Desk get_field_display_status: a virtual field is never written, and
+      // a set_only_once field is read-only once the document is saved.
+      field.isVirtual ||
+      (field.setOnlyOnce && isSavedOnServer(widget.initialData)) ||
       // Likewise, never lock a field because an expression failed to parse.
       _evaluateDepends(field.readOnlyDependsOn, false, onError: false);
 
@@ -1614,7 +1616,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
     final initialValue =
         _formData[field.fieldname] ??
         widget.initialData?[field.fieldname] ??
-        field.defaultValue;
+        _defaultFor(field);
 
     final fieldWidget = _fieldFactory.createField(
       field: fieldWithEffectiveProps,
@@ -2024,13 +2026,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
       if (widget.initialData != null) {
         _formData.addAll(widget.initialData!);
       }
-      for (final field in widget.meta.fields) {
-        if (field.fieldname != null &&
-            !field.hidden &&
-            !_formData.containsKey(field.fieldname)) {
-          _formData[field.fieldname!] ??= field.defaultValue;
-        }
-      }
+      _seedDefaults();
       if (widget.linkOptionService != null && widget.useLinkFieldCoordinator) {
         _linkFieldCoordinator = LinkFieldCoordinator(
           meta: widget.meta,
@@ -2176,7 +2172,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         completeFormData[field.fieldname!] =
             formValues[field.fieldname] ??
             widget.initialData?[field.fieldname] ??
-            field.defaultValue ??
+            _defaultFor(field) ??
             (field.fieldtype == 'Check'
                 ? 0
                 : (field.fieldtype == 'Table' ||
@@ -2195,6 +2191,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         completeFormData[entry.key] = entry.value;
       }
     }
+    _toFrappeSaveValues(completeFormData);
 
     // Drop fields the user can't actually see from the save payload,
     // mirroring Frappe Desk's behaviour where hidden-by-depends_on fields
@@ -2408,6 +2405,24 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
   /// Warms [_childRowMeta] for every `Table` field so the submit-time row
   /// sweep can run synchronously. Failures are swallowed on purpose: a table
   /// whose meta never arrives is simply not row-checked.
+  /// Gives every field the form has no value for its default, as Desk does
+  /// for a new document (`frappe.model.set_default_values`): typed by field
+  /// type ([typedDefaultValue]), `Today` on a Date resolved to today's date,
+  /// and hidden fields included. Runs on first build and again whenever the
+  /// form is reloaded with new data, so both start the same way.
+  void _seedDefaults() {
+    for (final field in widget.meta.fields) {
+      final name = field.fieldname;
+      if (name == null || _formData.containsKey(name)) continue;
+      _formData[name] = _defaultFor(field);
+    }
+  }
+
+  /// [field]'s default for a new document: tokens resolved for
+  /// [FrappeFormBuilder.sessionUser], then typed ([typedDefaultValue]).
+  Object? _defaultFor(DocField field) =>
+      typedDefaultValue(field, user: widget.sessionUser);
+
   void _prefetchChildRowMeta() {
     final getMeta = widget.getMeta;
     if (getMeta == null) return;
@@ -2524,7 +2539,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         complete[field.fieldname!] =
             formValues[field.fieldname] ??
             widget.initialData?[field.fieldname] ??
-            field.defaultValue ??
+            _defaultFor(field) ??
             (field.fieldtype == 'Check'
                 ? 0
                 : (field.fieldtype == 'Table' ||
@@ -2538,7 +2553,37 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         complete[entry.key] = entry.value;
       }
     }
+    _toFrappeSaveValues(complete);
     return complete;
+  }
+
+  /// The form-wide initial values handed to [FormBuilder]. A date, datetime or
+  /// time picker falls back to this map when its own value is empty, and it can
+  /// only hold a [DateTime], so stored text is converted here and an empty
+  /// value becomes null (`''` used to crash the field on re-open).
+  Map<String, dynamic> _pickerSafeValues(Map<String, dynamic> values) {
+    final out = Map<String, dynamic>.from(values);
+    for (final f in widget.meta.fields) {
+      final name = f.fieldname;
+      if (name != null &&
+          temporalFieldtypes.contains(f.fieldtype) &&
+          out.containsKey(name)) {
+        out[name] = pickerDateTime(f.fieldtype, out[name]);
+      }
+    }
+    return out;
+  }
+
+  /// Values in [data] the way Desk holds them at save ([frappeSaveValue]):
+  /// dates in Frappe's format and empty as null, numbers with a precision
+  /// rounded to it.
+  void _toFrappeSaveValues(Map<String, dynamic> data) {
+    for (final f in widget.meta.fields) {
+      final name = f.fieldname;
+      if (name != null && data.containsKey(name)) {
+        data[name] = frappeSaveValue(f, data[name]);
+      }
+    }
   }
 
   /// Builds current form data (same structure as submit). Used for dirty detection.
@@ -2555,7 +2600,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
     widget.registerSubmit?.call(_handleReactiveSubmit);
     return FormBuilder(
       key: _formKey,
-      initialValue: _controller!.values,
+      initialValue: _pickerSafeValues(_controller!.values),
       child: Column(
         children: [
           _buildTabHeader(formStyle),
@@ -2799,7 +2844,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
 
     return FormBuilder(
       key: _formKey,
-      initialValue: Map<String, dynamic>.from(_formData),
+      initialValue: _pickerSafeValues(_formData),
       child: Column(
         children: [
           if (_linkOptionsLoading)

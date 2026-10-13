@@ -50,6 +50,14 @@ class DocField {
   /// existing rows but not remove them (Desk hides the grid's delete).
   final bool cannotDeleteRows;
 
+  /// Frappe `set_only_once=1`: the value can be set while the document is new
+  /// and is read-only once it is saved (Desk `get_field_display_status`; the
+  /// server rejects a change with `CannotChangeConstantError`). Read from
+  /// [rawData], so it survives `toJson`/`fromJson` round trips.
+  bool get setOnlyOnce =>
+      frappe_json.parseBool(rawData?['set_only_once']) ||
+      frappe_json.parseBool(rawData?['setOnlyOnce']);
+
   /// The raw docfield payload this instance was parsed from, if any.
   ///
   /// Retained so [toJson] can round-trip the Frappe docfield properties this
@@ -177,11 +185,9 @@ class DocField {
       hidden: parseBool(json['hidden']),
       options: json['options'] as String?,
       dependsOn: json['depends_on'] as String? ?? json['dependsOn'] as String?,
-      mandatoryDependsOn:
-          json['mandatory_depends_on'] as String? ??
+      mandatoryDependsOn: json['mandatory_depends_on'] as String? ??
           json['mandatoryDependsOn'] as String?,
-      readOnlyDependsOn:
-          json['read_only_depends_on'] as String? ??
+      readOnlyDependsOn: json['read_only_depends_on'] as String? ??
           json['readOnlyDependsOn'] as String?,
       linkFilters: linkFiltersFromJson(
         json['link_filters'] ?? json['linkFilters'],
@@ -197,18 +203,15 @@ class DocField {
       idx: parseInt(json['idx']),
       inListView:
           parseBool(json['in_list_view']) || parseBool(json['inListView']),
-      allowMultiple:
-          parseBool(json['allow_multiple']) ||
+      allowMultiple: parseBool(json['allow_multiple']) ||
           parseBool(json['allowMultiple']) ||
           _isMultiSelectFieldType(json['fieldtype'] as String?),
       searchIndex:
           parseBool(json['search_index']) || parseBool(json['searchIndex']),
       isVirtual: parseBool(json['is_virtual']) || parseBool(json['isVirtual']),
-      cannotAddRows:
-          parseBool(json['cannot_add_rows']) ||
+      cannotAddRows: parseBool(json['cannot_add_rows']) ||
           parseBool(json['cannotAddRows']),
-      cannotDeleteRows:
-          parseBool(json['cannot_delete_rows']) ||
+      cannotDeleteRows: parseBool(json['cannot_delete_rows']) ||
           parseBool(json['cannotDeleteRows']),
       rawData: json,
     );
