@@ -34,7 +34,12 @@ class _Server extends http.BaseClient {
 DocTypeMeta _codeMeta(String name) => DocTypeMeta(
   name: name,
   titleField: 'product_code',
-  searchFields: const ['product_code', 'brand_name', 'category_name', 'ghost_field'],
+  searchFields: const [
+    'product_code',
+    'brand_name',
+    'category_name',
+    'ghost_field',
+  ],
   fields: [
     DocField(fieldname: 'product_code', fieldtype: 'Data'),
     DocField(fieldname: 'brand_name', fieldtype: 'Link'),
@@ -148,7 +153,11 @@ void main() {
     });
 
     test('empty text is the first page: no or_filters', () async {
-      await service().searchLinkOptions('Product Code', txt: '', pageLength: 10);
+      await service().searchLinkOptions(
+        'Product Code',
+        txt: '',
+        pageLength: 10,
+      );
       final q = server.seen.single.queryParameters;
       expect(q['limit_page_length'], '10');
       expect(q.containsKey('or_filters'), isFalse);
