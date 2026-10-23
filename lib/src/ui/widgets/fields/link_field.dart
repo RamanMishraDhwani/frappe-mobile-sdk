@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_form_builder/flutter_form_builder.dart';
@@ -435,7 +436,10 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
     try {
       final svc = widget.linkOptionService;
       if (_usesServerSearch()) {
-        final size = svc.searchPolicy.prefetchSize;
+        // At least 2, as [LinkSearchPolicy] asserts; the assert is gone in a
+        // release build. Clamped here because [size] also decides below
+        // whether the page holds every match. 0 would ask for every row.
+        final size = math.max(2, svc.searchPolicy.prefetchSize);
         final List<LinkOptionEntity> options;
         try {
           options = await svc.searchLinkOptions(
@@ -583,7 +587,9 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
       return await svc.searchLinkOptions(
         widget.linkedDoctype,
         txt: text,
-        pageLength: svc.searchPolicy.pageLength,
+        // At least 1, as [LinkSearchPolicy] asserts (not in a release
+        // build): Frappe reads a page length of 0 as "every row".
+        pageLength: math.max(1, svc.searchPolicy.pageLength),
         filters: _searchFilters,
       );
     } catch (e, st) {

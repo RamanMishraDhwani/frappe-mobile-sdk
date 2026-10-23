@@ -10,21 +10,47 @@ LinkOptionEntity _opt(String name, String label) => LinkOptionEntity(
   lastUpdated: 0,
 );
 
+/// A policy holding page sizes below the minimums [LinkSearchPolicy] asserts.
+/// A release build has no asserts, so `LinkSearchPolicy(pageLength: 0)`
+/// holds exactly this there; implementing the class skips the assert here.
+class _UncheckedPolicy implements LinkSearchPolicy {
+  const _UncheckedPolicy({
+    required this.prefetchSize,
+    required this.pageLength,
+  });
+
+  @override
+  final int prefetchSize;
+  @override
+  final int pageLength;
+  @override
+  bool get enabled => true;
+  @override
+  int get minChars => 2;
+  @override
+  Duration get debounce => const Duration(milliseconds: 100);
+  @override
+  Set<String> get prefetchOnlyDoctypes => const {};
+}
+
 /// A service in server-search mode that records every call.
 class _ServerSearchService extends LinkOptionService {
-  _ServerSearchService({required this.firstPage, this.results = const []})
-    : super.withoutResolver();
+  _ServerSearchService({
+    required this.firstPage,
+    this.results = const [],
+    this.policy = const LinkSearchPolicy(debounce: Duration(milliseconds: 100)),
+  }) : super.withoutResolver();
 
   final List<LinkOptionEntity> firstPage;
   final List<LinkOptionEntity> results;
+  final LinkSearchPolicy policy;
   final List<String> searches = [];
   final List<int> pageLengths = [];
   int prefetches = 0;
   final Map<String, String> titles = {};
 
   @override
-  LinkSearchPolicy get searchPolicy =>
-      const LinkSearchPolicy(debounce: Duration(milliseconds: 100));
+  LinkSearchPolicy get searchPolicy => policy;
 
   @override
   bool usesServerSearch(String doctype) => true;
@@ -201,6 +227,49 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
     await tester.pumpAndSettle();
     expect(picked, isEmpty);
+  });
+
+  group('page sizes below the minimum (release build, asserts off)', () {
+    // A full page for the 2 rows the picker asks for.
+    final twoRows = [_opt('0', 'ITEM0000000'), _opt('1', 'ITEM0000001')];
+
+    testWidgets('page length 0 is never sent: the first page asks for 2 '
+        'rows and a search for 1', (tester) async {
+      final svc = _ServerSearchService(
+        firstPage: twoRows,
+        results: [_opt('4205', 'ACME0WIDGET')],
+        policy: const _UncheckedPolicy(prefetchSize: 0, pageLength: 0),
+      );
+      await tester.pumpWidget(
+        _wrap(LinkField(field: _field(), linkOptionService: svc)),
+      );
+      await tester.pumpAndSettle();
+      expect(svc.pageLengths, [2]);
+      await tester.tap(find.byType(TextField));
+      await tester.enterText(find.byType(TextField), 'ACME0WID');
+      await tester.pump(const Duration(milliseconds: 150));
+      await tester.pumpAndSettle();
+      expect(svc.searches, ['', 'ACME0WID']);
+      expect(svc.pageLengths, [2, 1]);
+    });
+
+    testWidgets('prefetchSize 0: a full 2-row first page is not taken for '
+        'the whole list, so typing still searches the server', (tester) async {
+      final svc = _ServerSearchService(
+        firstPage: twoRows,
+        results: [_opt('4205', 'ACME0WIDGET')],
+        policy: const _UncheckedPolicy(prefetchSize: 0, pageLength: 20),
+      );
+      await tester.pumpWidget(
+        _wrap(LinkField(field: _field(), linkOptionService: svc)),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(TextField));
+      await tester.enterText(find.byType(TextField), 'ACME0WID');
+      await tester.pump(const Duration(milliseconds: 150));
+      await tester.pumpAndSettle();
+      expect(svc.searches, ['', 'ACME0WID']);
+    });
   });
 
   testWidgets('a held value past the first page shows its title, not the '
