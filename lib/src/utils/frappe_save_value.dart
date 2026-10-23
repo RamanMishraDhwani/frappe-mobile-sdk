@@ -6,17 +6,30 @@ import 'date_helpers.dart';
 /// [value] the way Desk would hold [field]'s value when the document is saved:
 /// - Date, Datetime and Time in Frappe's text format, empty as null
 ///   ([frappeTemporalValue]);
-/// - Float, Currency and Percent with a `precision` rounded to it, as
-///   `ControlFloat.parse` does with `flt(value, precision)`. The server stores
-///   what it receives without rounding, so the form has to.
+/// - with [roundNumbers], Float, Currency and Percent with a `precision`
+///   rounded to it, as `ControlFloat.parse` does with `flt(value, precision)`.
+///   The server stores what it receives without rounding.
 /// Any other value is returned unchanged.
-Object? frappeSaveValue(DocField field, Object? value) {
+///
+/// [roundNumbers] is OFF by default, which is what 2.0.0-beta.4 sent. Desk
+/// rounds as the user TYPES, so its scripts compute from the rounded figure;
+/// a host whose client scripts compute related values from the unrounded
+/// figure would otherwise save a rounded field beside an unrounded one, and a
+/// server check such as `abs(a - (b + c)) > 1e-6` refuses the save. Clamping a
+/// value to another field (`flt(owner_total, 6)`) and rounding it up to a
+/// 2-decimal precision likewise lands it above the limit it was clamped to.
+Object? frappeSaveValue(
+  DocField field,
+  Object? value, {
+  bool roundNumbers = false,
+}) {
   final type = field.fieldtype;
   if (temporalFieldtypes.contains(type)) {
     return frappeTemporalValue(type, value);
   }
   final precision = field.precision;
-  if (precision != null &&
+  if (roundNumbers &&
+      precision != null &&
       precision >= 0 &&
       value is num &&
       (type == 'Float' || type == 'Currency' || type == 'Percent')) {

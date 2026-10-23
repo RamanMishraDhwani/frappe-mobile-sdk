@@ -46,10 +46,13 @@ class FormController extends ChangeNotifier {
     Map<String, dynamic>? parentData,
     DateTime Function()? now,
     SessionUser? sessionUser,
+    bool roundNumbersOnSave = false,
   }) : _meta = meta,
        _parentData = parentData,
        _now = now ?? DateTime.now,
-       _sessionUser = sessionUser {
+       _sessionUser = sessionUser,
+       _roundNumbersOnSave = roundNumbersOnSave,
+       _newDocument = isNewDocumentData(initialData) {
     _graph = DependencyGraph.build(meta);
     assert(() {
       _graph.assertNoValueCycles();
@@ -64,6 +67,14 @@ class FormController extends ChangeNotifier {
 
   /// For `__user` / `user_fullname` defaults ([typedDefaultValue]).
   final SessionUser? _sessionUser;
+
+  /// Rounds numbers to their precision in [buildPayload]'s values
+  /// ([frappeSaveValue]); off by default.
+  final bool _roundNumbersOnSave;
+
+  /// The initial data is not a saved document ([isNewDocumentData]); only
+  /// then does a Select with no default start on its first option.
+  final bool _newDocument;
   late DependencyGraph _graph;
 
   /// Parent document values, supplying `parent` to depends_on expressions on a
@@ -177,7 +188,12 @@ class FormController extends ChangeNotifier {
         _rawValues[name] = initialData[name];
         continue;
       }
-      _rawValues[name] = typedDefaultValue(f, user: _sessionUser, now: _now);
+      _rawValues[name] = typedDefaultValue(
+        f,
+        user: _sessionUser,
+        now: _now,
+        newDocument: _newDocument,
+      );
     }
   }
 
@@ -680,7 +696,13 @@ class FormController extends ChangeNotifier {
               ? 0
               : (f.fieldtype == 'Table' || f.fieldtype == 'Table MultiSelect')
               ? <dynamic>[]
-              : (typedDefaultValue(f, user: _sessionUser, now: _now) ?? ''));
+              : (typedDefaultValue(
+                      f,
+                      user: _sessionUser,
+                      now: _now,
+                      newDocument: _newDocument,
+                    ) ??
+                    ''));
     }
     // also carry non-null companion/extra keys present in raw values, minus the
     // std fields seeded purely so depends_on can read them (see _stdEvalFields)
@@ -688,11 +710,16 @@ class FormController extends ChangeNotifier {
       if (v != null && !_stdEvalFields.contains(k)) complete[k] = v;
     });
     // Values the way Desk holds them at save: dates in Frappe's format and
-    // empty as null, numbers with a precision rounded to it.
+    // empty as null; numbers rounded to their precision only when the host
+    // asked for it (roundNumbersOnSave).
     for (final f in _meta.fields) {
       final name = f.fieldname;
       if (name != null && complete.containsKey(name)) {
-        complete[name] = frappeSaveValue(f, complete[name]);
+        complete[name] = frappeSaveValue(
+          f,
+          complete[name],
+          roundNumbers: _roundNumbersOnSave,
+        );
       }
     }
 

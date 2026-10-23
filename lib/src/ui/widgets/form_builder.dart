@@ -226,6 +226,13 @@ class FrappeFormBuilder extends StatefulWidget {
   /// for the server to fill on insert.
   final SessionUser? sessionUser;
 
+  /// Round Float, Currency and Percent values to their `precision` in the
+  /// saved payload, as Desk's controls do. OFF by default (what 2.0.0-beta.4
+  /// sent): see [frappeSaveValue] for when rounding only at save breaks a
+  /// server check. Turn it on when the host's scripts do not compute values
+  /// from the unrounded figure.
+  final bool roundNumbersOnSave;
+
   /// Custom styling options
   final FrappeFormStyle? style;
 
@@ -356,6 +363,7 @@ class FrappeFormBuilder extends StatefulWidget {
     this.customFieldFactory,
     this.creationCapture,
     this.sessionUser,
+    this.roundNumbersOnSave = false,
     this.childRowNoticeBuilder,
     this.style,
     this.uploadFile,
@@ -673,6 +681,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
             initialData: widget.initialData,
             parentData: widget.parentFormData,
             sessionUser: widget.sessionUser,
+            roundNumbersOnSave: widget.roundNumbersOnSave,
           );
       _ownsController = widget.controller == null;
       // A host-supplied controller never saw the constructor argument above, so
@@ -2420,8 +2429,11 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
 
   /// [field]'s default for a new document: tokens resolved for
   /// [FrappeFormBuilder.sessionUser], then typed ([typedDefaultValue]).
-  Object? _defaultFor(DocField field) =>
-      typedDefaultValue(field, user: widget.sessionUser);
+  Object? _defaultFor(DocField field) => typedDefaultValue(
+    field,
+    user: widget.sessionUser,
+    newDocument: isNewDocumentData(widget.initialData),
+  );
 
   void _prefetchChildRowMeta() {
     final getMeta = widget.getMeta;
@@ -2575,13 +2587,17 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
   }
 
   /// Values in [data] the way Desk holds them at save ([frappeSaveValue]):
-  /// dates in Frappe's format and empty as null, numbers with a precision
-  /// rounded to it.
+  /// dates in Frappe's format and empty as null; numbers with a precision
+  /// rounded to it only when [FrappeFormBuilder.roundNumbersOnSave] is on.
   void _toFrappeSaveValues(Map<String, dynamic> data) {
     for (final f in widget.meta.fields) {
       final name = f.fieldname;
       if (name != null && data.containsKey(name)) {
-        data[name] = frappeSaveValue(f, data[name]);
+        data[name] = frappeSaveValue(
+          f,
+          data[name],
+          roundNumbers: widget.roundNumbersOnSave,
+        );
       }
     }
   }

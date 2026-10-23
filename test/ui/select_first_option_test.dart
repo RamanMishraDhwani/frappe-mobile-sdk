@@ -96,4 +96,59 @@ void main() {
     await tester.pumpAndSettle();
     expect(out!['phase'], 'New');
   });
+
+  // Frappe omits null fields from a saved document it returns, so an unset
+  // Select is ABSENT from initialData. Desk applies set_default_values to new
+  // documents only; seeding the first option here would write it on the next
+  // save of a document whose Select was deliberately left empty.
+  for (final mode in FormBuilderMode.values) {
+    testWidgets('$mode: a saved document with the Select unset is NOT given '
+        'the first option', (tester) async {
+      Map<String, dynamic>? out;
+      void Function()? submit;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: FrappeFormBuilder(
+              meta: meta(),
+              mode: mode,
+              initialData: const {'name': 'PE-1'},
+              onSubmit: (d) => out = d,
+              registerSubmit: (fn) => submit = fn,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      submit!();
+      await tester.pumpAndSettle();
+      expect(out!['phase'], anyOf(isNull, ''));
+    });
+  }
+
+  test('isNewDocumentData: no name, server_name or mobile_uuid', () {
+    expect(isNewDocumentData(null), isTrue);
+    expect(isNewDocumentData(const {'phase': 'New'}), isTrue);
+    expect(isNewDocumentData(const {'name': 'PE-1'}), isFalse);
+    expect(isNewDocumentData(const {'server_name': 'PE-1'}), isFalse);
+    expect(isNewDocumentData(const {'mobile_uuid': 'u-1'}), isFalse);
+  });
+
+  test('typedDefaultValue: an explicit default still applies to a saved '
+      'document; only the first-option rule is new-document only', () {
+    final withDefault = DocField(
+      fieldname: 'phase',
+      fieldtype: 'Select',
+      options: 'New\nOld',
+      defaultValue: 'Old',
+    );
+    final noDefault = DocField(
+      fieldname: 'phase',
+      fieldtype: 'Select',
+      options: 'New\nOld',
+    );
+    expect(typedDefaultValue(withDefault, newDocument: false), 'Old');
+    expect(typedDefaultValue(noDefault, newDocument: false), isNull);
+    expect(typedDefaultValue(noDefault), 'New');
+  });
 }

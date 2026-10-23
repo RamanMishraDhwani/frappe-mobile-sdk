@@ -4,14 +4,19 @@ import 'package:frappe_mobile_sdk/frappe_mobile_sdk.dart';
 import 'package:frappe_mobile_sdk/src/utils/frappe_save_value.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-/// Float, Currency and Percent fields with a precision are rounded to it, as
-/// Desk's `ControlFloat.parse` does (`flt(value, precision)`); the server
-/// stores what it receives without rounding.
+/// With `roundNumbers` / `roundNumbersOnSave`, Float, Currency and Percent
+/// fields with a precision are rounded to it, as Desk's `ControlFloat.parse`
+/// does (`flt(value, precision)`). It is OFF by default, which is what
+/// 2.0.0-beta.4 sent: rounding only at save, beside client-script values
+/// computed from the unrounded figure, makes server checks refuse the save.
 void main() {
   setUpAll(() {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   });
+
+  DocField f(String type, int? p) =>
+      DocField(fieldname: 'x', fieldtype: type, precision: p);
 
   test('Frappe rounding with an explicit precision', () {
     expect(frappeRound(12.3456, 2), 12.35);
@@ -21,18 +26,39 @@ void main() {
     expect(frappeRound(2.5, 0), 3);
   });
 
-  test('only numbers in fields with a precision are rounded', () {
-    DocField f(String type, int? p) =>
-        DocField(fieldname: 'x', fieldtype: type, precision: p);
-    expect(frappeSaveValue(f('Currency', 2), 12.3456), 12.35);
-    expect(frappeSaveValue(f('Percent', 2), 33.3333), 33.33);
-    expect(frappeSaveValue(f('Float', null), 12.3456), 12.3456);
-    expect(frappeSaveValue(f('Int', 2), 7), 7);
-    expect(frappeSaveValue(f('Data', 2), 'x'), 'x');
+  test('with roundNumbers, only numbers in fields with a precision are '
+      'rounded', () {
+    expect(
+      frappeSaveValue(f('Currency', 2), 12.3456, roundNumbers: true),
+      12.35,
+    );
+    expect(
+      frappeSaveValue(f('Percent', 2), 33.3333, roundNumbers: true),
+      33.33,
+    );
+    expect(
+      frappeSaveValue(f('Float', null), 12.3456, roundNumbers: true),
+      12.3456,
+    );
+    expect(frappeSaveValue(f('Int', 2), 7, roundNumbers: true), 7);
+    expect(frappeSaveValue(f('Data', 2), 'x', roundNumbers: true), 'x');
+  });
+
+  test('by default numbers are sent as entered (beta.4 behaviour)', () {
+    expect(frappeSaveValue(f('Currency', 2), 12.3456), 12.3456);
+    // A clamp to another field (flt(owner_total, 6)) must not be rounded UP
+    // past the limit it was clamped to: 10.117141 -> 10.12 > 10.117141.
+    expect(frappeSaveValue(f('Float', 2), 10.117141), 10.117141);
+    // A server-offered remaining figure floored to 3dp stays as offered.
+    expect(frappeSaveValue(f('Float', 2), 0.356), 0.356);
   });
 
   for (final mode in FormBuilderMode.values) {
-    testWidgets('$mode: the save carries the rounded amount', (tester) async {
+    Future<Map<String, dynamic>?> save(
+      WidgetTester tester, {
+      required bool round,
+      required double value,
+    }) async {
       Map<String, dynamic>? out;
       void Function()? submit;
       await tester.pumpWidget(
@@ -51,7 +77,8 @@ void main() {
                 ],
               ),
               mode: mode,
-              initialData: const {'price': 12.3456},
+              roundNumbersOnSave: round,
+              initialData: {'price': value},
               onSubmit: (d) => out = d,
               registerSubmit: (fn) => submit = fn,
             ),
@@ -61,7 +88,21 @@ void main() {
       await tester.pumpAndSettle();
       submit!();
       await tester.pumpAndSettle();
+      return out;
+    }
+
+    testWidgets('$mode: roundNumbersOnSave rounds the saved amount', (
+      tester,
+    ) async {
+      final out = await save(tester, round: true, value: 12.3456);
       expect(out!['price'], 12.35);
+    });
+
+    testWidgets('$mode: by default the saved amount is not rounded', (
+      tester,
+    ) async {
+      final out = await save(tester, round: false, value: 0.356);
+      expect(out!['price'], 0.356);
     });
   }
 }

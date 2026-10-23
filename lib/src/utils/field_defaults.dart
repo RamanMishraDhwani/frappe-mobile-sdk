@@ -24,10 +24,17 @@ import 'frappe_reserved_fields.dart';
 /// Without the typing a Check whose default is `"0"` starts as the string
 /// `"0"`, which `eval:doc.flag` reads as true (a non-empty string): every
 /// field gated on a switch that is off is shown until the user flips it.
+///
+/// [newDocument]: Desk applies `set_default_values` to a NEW document only.
+/// On a saved document whose Select is unset (Frappe omits null fields from
+/// the document it returns), starting it on its first option would write that
+/// option on the next save. The first-option rule therefore applies only when
+/// [newDocument] is true; an explicit `default` is unaffected.
 Object? typedDefaultValue(
   DocField field, {
   SessionUser? user,
   DateTime Function()? now,
+  bool newDocument = true,
 }) {
   final raw = field.defaultValue;
   if (raw != null && raw.isNotEmpty) {
@@ -56,10 +63,21 @@ Object? typedDefaultValue(
       return (raw == null || raw.isEmpty) ? null : _flt(raw);
     case 'Select':
       if (raw != null && raw.isNotEmpty) return raw;
-      return _firstSelectOption(field);
+      return newDocument ? _firstSelectOption(field) : null;
     default:
       return raw;
   }
+}
+
+/// Whether [data] is a document that has never been saved: no server `name`
+/// (or local `server_name`) and no `mobile_uuid` of a record created on this
+/// device. Null or empty data is new.
+bool isNewDocumentData(Map<String, dynamic>? data) {
+  if (data == null) return true;
+  bool blank(Object? v) => v == null || v.toString().trim().isEmpty;
+  return blank(data['name']) &&
+      blank(data['server_name']) &&
+      blank(data['mobile_uuid']);
 }
 
 /// Desk starts a Select with no default on its first option
