@@ -127,6 +127,22 @@ void main() {
 
   tearDown(() => server.close());
 
+  // Mobile-auth tokens live in secure storage; the `auth_tokens` row keeps
+  // only the user metadata, with its token columns blank.
+  const storage = FlutterSecureStorage();
+  Future<String?> storedAccess() =>
+      storage.read(key: 'frappe_mobile_access_token');
+  Future<String?> storedRefresh() =>
+      storage.read(key: 'frappe_mobile_refresh_token');
+  Future<void> expectNoTokenInRow() async {
+    final row = await db.authTokenDao.getCurrentToken();
+    expect(row, isNotNull);
+    expect(row!.accessToken, isEmpty);
+    expect(row.refreshToken, isEmpty);
+  }
+
+  // The row shape older SDK versions wrote (tokens in the row): restoreSession
+  // moves them to secure storage on first read.
   Future<void> seedToken({required Duration age, String access = 'access-1'}) =>
       db.authTokenDao.insertToken(
         AuthTokenEntity(
@@ -144,9 +160,9 @@ void main() {
 
       expect(auth.isAuthenticated, isTrue);
       expect(auth.roles, ['Tester']);
-      final t = await db.authTokenDao.getCurrentToken();
-      expect(t?.accessToken, 'access-1');
-      expect(t?.refreshToken, 'refresh-1');
+      expect(await storedAccess(), 'access-1');
+      expect(await storedRefresh(), 'refresh-1');
+      await expectNoTokenInRow();
       expect(auth.client!.requestHeaders['Authorization'], 'Bearer access-1');
       expect(auth.currentUserInfo?.fullName, 'Test User');
     });
@@ -191,9 +207,9 @@ void main() {
       expect(await auth.restoreSession(), isTrue);
 
       expect(server.count('mobile_auth.refresh_token'), 1);
-      final t = await db.authTokenDao.getCurrentToken();
-      expect(t?.accessToken, 'access-2');
-      expect(t?.refreshToken, 'refresh-2');
+      expect(await storedAccess(), 'access-2');
+      expect(await storedRefresh(), 'refresh-2');
+      await expectNoTokenInRow();
       expect(auth.client!.requestHeaders['Authorization'], 'Bearer access-2');
     });
 
@@ -203,10 +219,8 @@ void main() {
       expect(await auth.restoreSession(isOnline: false), isTrue);
 
       expect(server.hits, isEmpty);
-      expect(
-        (await db.authTokenDao.getCurrentToken())?.accessToken,
-        'access-1',
-      );
+      expect(await storedAccess(), 'access-1');
+      await expectNoTokenInRow();
     });
 
     test('a definitively rejected refresh deletes the token', () async {
@@ -227,7 +241,7 @@ void main() {
       expect(await auth.restoreSession(), isTrue);
 
       expect(
-        (await db.authTokenDao.getCurrentToken())?.accessToken,
+        await storedAccess(),
         'access-1',
         reason: 'an offline blip must not strand the user behind login',
       );
