@@ -44,7 +44,12 @@ class AuthService {
   // needs it — `pubspec.yaml` declares `android` and `ios` only, and there is
   // no macOS target anywhere in the repo. Do not reintroduce it without a
   // migration path and an entry in "Notes for upgraders".
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final FlutterSecureStorage _storage;
+
+  /// A mobile-auth token that secure storage refused to store. It is held in
+  /// memory for this session only and never written to the database, so the
+  /// session works and the next cold start asks for a login.
+  AuthTokenEntity? _sessionOnlyMobileToken;
   static const Uuid _uuid = Uuid();
   FrappeClient? _client;
   bool _isAuthenticated = false;
@@ -188,13 +193,17 @@ class AuthService {
   ({String email, String fullName})? get currentUserInfo => _cachedUserInfo;
 
   /// Default constructor. Call [initialize] before using auth methods.
-  AuthService();
+  AuthService() : _storage = const FlutterSecureStorage();
 
   /// Named constructor used by [FrappeSDK.forTesting]: wires [client] and
   /// [database] directly, skipping [initialize] (which writes the base URL to
   /// [FlutterSecureStorage]). Login, restore and logout still use secure
-  /// storage, so tests exercising them must mock it.
-  AuthService.forTesting(FrappeClient client, {AppDatabase? database}) {
+  /// storage, so tests exercising them must mock it or pass [storage].
+  AuthService.forTesting(
+    FrappeClient client, {
+    AppDatabase? database,
+    FlutterSecureStorage? storage,
+  }) : _storage = storage ?? const FlutterSecureStorage() {
     _client = client;
     _database = database;
   }
@@ -1183,15 +1192,55 @@ class AuthService {
 
   /// Persists a mobile-auth token: the secrets to secure storage, the
   /// non-secret metadata to the `auth_tokens` row with its token columns
-  /// written EMPTY. Secure storage is written first so a failure there leaves
-  /// the previous session intact rather than a row with no credential.
-  Future<void> _saveMobileToken(AuthTokenEntity token) async {
-    await _storage.write(key: _keyMobileAccessToken, value: token.accessToken);
-    await _storage.write(
-      key: _keyMobileRefreshToken,
-      value: token.refreshToken,
-    );
+  /// written EMPTY.
+  ///
+  /// When secure storage cannot be written (on Android this happens after a
+  /// backup restore or a Keystore reset), the token is kept in memory for
+  /// this session instead, so login and refresh still succeed. It is never
+  /// written to the database as a fallback; the next cold start asks for a
+  /// login. Returns whether the token reached secure storage.
+  Future<bool> _saveMobileToken(AuthTokenEntity token) async {
+    final persisted = await _writeMobileSecrets(token);
     await _database!.authTokenDao.insertToken(_withoutSecrets(token));
+    _sessionOnlyMobileToken = persisted ? null : token;
+    return persisted;
+  }
+
+  /// Writes both mobile-auth secrets to secure storage. On failure, deletes
+  /// whatever was written and tries once more: a Keystore reset can leave an
+  /// entry the plugin cannot overwrite but can still delete. Returns false,
+  /// with no half-written pair left behind, if the retry fails as well.
+  Future<bool> _writeMobileSecrets(AuthTokenEntity token) async {
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await _storage.write(
+          key: _keyMobileAccessToken,
+          value: token.accessToken,
+        );
+        await _storage.write(
+          key: _keyMobileRefreshToken,
+          value: token.refreshToken,
+        );
+        return true;
+      } catch (e, st) {
+        dev.log(
+          'Secure storage write failed (attempt $attempt of 2) — $e\n$st',
+          name: 'Auth',
+        );
+        await _deleteMobileSecretsQuietly();
+      }
+    }
+    return false;
+  }
+
+  Future<void> _deleteMobileSecretsQuietly() async {
+    for (final key in const [_keyMobileAccessToken, _keyMobileRefreshToken]) {
+      try {
+        await _storage.delete(key: key);
+      } catch (e) {
+        dev.log('Secure storage delete failed — $e', name: 'Auth');
+      }
+    }
   }
 
   /// Reads the mobile-auth token: metadata from the `auth_tokens` row, the
@@ -1204,19 +1253,30 @@ class AuthService {
   /// writes a token into the row, so a non-empty column can only have come
   /// from an older version and is the most recent token on the device; it is
   /// therefore copied over whatever secure storage holds. The columns are
-  /// blanked only AFTER the secure-storage write has succeeded, so a failed
-  /// write never loses the session.
+  /// blanked only AFTER the secure-storage write has succeeded. If the write
+  /// fails, the row is left as it is and its token serves this session; the
+  /// migration is tried again on the next read.
   Future<AuthTokenEntity?> _readMobileToken() async {
     final row = await _database!.authTokenDao.getCurrentToken();
     if (row == null) return null;
     if (row.accessToken.isNotEmpty || row.refreshToken.isNotEmpty) {
-      await _saveMobileToken(row);
-      dev.log(
-        'Moved stored login token from the database to secure storage',
-        name: 'Auth',
-      );
+      if (await _writeMobileSecrets(row)) {
+        await _database!.authTokenDao.insertToken(_withoutSecrets(row));
+        dev.log(
+          'Moved stored login token from the database to secure storage',
+          name: 'Auth',
+        );
+      } else {
+        dev.log(
+          'Secure storage refused the stored login token; using the database '
+          'copy for this session and retrying the move on the next read',
+          name: 'Auth',
+        );
+      }
       return row;
     }
+    final sessionOnly = _sessionOnlyMobileToken;
+    if (sessionOnly != null) return sessionOnly;
     final accessToken = await _storage.read(key: _keyMobileAccessToken);
     final refreshToken = await _storage.read(key: _keyMobileRefreshToken);
     return AuthTokenEntity(
@@ -1231,8 +1291,10 @@ class AuthService {
 
   /// Deletes the mobile-auth token from secure storage and the database.
   Future<void> _clearMobileTokens() async {
-    await _storage.delete(key: _keyMobileAccessToken);
-    await _storage.delete(key: _keyMobileRefreshToken);
+    _sessionOnlyMobileToken = null;
+    // Quiet: storage that cannot be written may not delete either, and the
+    // database row must still go.
+    await _deleteMobileSecretsQuietly();
     if (_database != null) {
       await _database!.authTokenDao.deleteAll();
     }
