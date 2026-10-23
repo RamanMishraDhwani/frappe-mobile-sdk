@@ -626,6 +626,12 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
           filters: _searchFilters,
         );
         if (!mounted || gen != _loadGen) return null;
+        // An empty full list beside a non-empty first page answers nothing:
+        // switching to it would stop every later search. Keep the error.
+        if (all.isEmpty && _options.isNotEmpty) {
+          if (_fullListLoadGen == gen) _fullListLoad = null;
+          return null;
+        }
         final seen = <String>{for (final o in all) o.name};
         setState(() {
           _options = [...all, ..._options.where((o) => seen.add(o.name))];

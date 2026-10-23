@@ -38,6 +38,26 @@ class _Server extends http.BaseClient {
   }
 }
 
+/// Fails every request: a dropped connection, or an HTTP error status.
+class _Failing extends http.BaseClient {
+  _Failing.dropped() : status = null;
+  _Failing.status(int this.status);
+  final int? status;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final code = status;
+    if (code == null) throw http.ClientException('Connection reset by peer');
+    return http.StreamedResponse(
+      Stream.fromIterable([
+        utf8.encode(jsonEncode({'exc_type': 'Error', 'exception': 'refused'})),
+      ]),
+      code,
+      headers: const {'content-type': 'application/json'},
+    );
+  }
+}
+
 /// The or_filters a request carried, decoded (empty when it sent none).
 List<dynamic> _orFilters(Uri url) {
   final raw = url.queryParameters['or_filters'];
@@ -50,8 +70,18 @@ DocTypeMeta _plainMeta(String name) => DocTypeMeta(
   fields: [DocField(fieldname: 'notes', fieldtype: 'Data')],
 );
 
-DocTypeMeta _meta(String name) =>
-    name == 'Plain Code' ? _plainMeta(name) : _codeMeta(name);
+/// A target whose title field is a Phone field, a type Desk does not search.
+DocTypeMeta _phoneMeta(String name) => DocTypeMeta(
+  name: name,
+  titleField: 'phone_no',
+  fields: [DocField(fieldname: 'phone_no', fieldtype: 'Phone')],
+);
+
+DocTypeMeta _meta(String name) => switch (name) {
+  'Plain Code' => _plainMeta(name),
+  'Phone Code' => _phoneMeta(name),
+  _ => _codeMeta(name),
+};
 
 /// Creates the local mirror of [meta] the way a pull does, with [rows].
 Future<void> _seedLocal(
@@ -436,6 +466,53 @@ void main() {
         {'server_name': 'OTHER-2', 'notes': 'second'},
       ]);
       expect(await search('plain', doctype: 'Plain Code'), ['PLAIN-1']);
+    });
+
+    test('a title field of a type Desk does not search is still matched, as '
+        'before', () async {
+      await _seedLocal(db, _phoneMeta('Phone Code'), 'docs__phone_code', [
+        {'server_name': 'PH-1', 'phone_no': 'TEL-0001'},
+        {'server_name': 'PH-2', 'phone_no': 'TEL-0002'},
+      ]);
+      expect(await search('0002', doctype: 'Phone Code'), ['PH-2']);
+    });
+  });
+
+  group('a failed request reaches the caller as an error, never as an empty '
+      'list (the picker falls back to the full list only on an error)', () {
+    Future<Object?> errorOf(http.BaseClient client) async {
+      final resolver = UnifiedResolver(
+        db: db,
+        metaDao: DoctypeMetaDao(db),
+        isOnline: () => true,
+        backgroundFetch: (_, _) async {},
+        metaResolver: (n) async => _meta(n),
+        offlineMode: const OfflineMode(enabled: false, isPersisted: true),
+        client: FrappeClient('http://localhost', httpClient: client),
+      );
+      final svc = LinkOptionService(resolver, (n) async => _meta(n));
+      try {
+        await svc.searchLinkOptions(
+          'Product Code',
+          txt: 'ACME',
+          pageLength: 20,
+        );
+        return null;
+      } catch (e) {
+        return e;
+      }
+    }
+
+    test('connection dropped', () async {
+      expect(await errorOf(_Failing.dropped()), isNotNull);
+    });
+
+    test('HTTP 417 (a refused search column)', () async {
+      expect(await errorOf(_Failing.status(417)), isNotNull);
+    });
+
+    test('HTTP 500', () async {
+      expect(await errorOf(_Failing.status(500)), isNotNull);
     });
   });
 

@@ -326,6 +326,23 @@ void main() {
       expect(find.text('ITEM0000003'), findsOneWidget);
       expect(svc.prefetches, 1);
     });
+
+    testWidgets('a typed search fails and the full list comes back empty: the '
+        'search still says it failed, and a retry searches again', (
+      tester,
+    ) async {
+      final svc = _FlakyService(firstPage: _tenRows, failSearch: true);
+      await tester.pumpWidget(
+        _wrap(LinkField(field: _field(), linkOptionService: svc)),
+      );
+      await tester.pumpAndSettle();
+      await _type(tester, 'ITEM000000');
+      expect(find.text('Search failed. Tap to retry'), findsOneWidget);
+      expect(find.text('ITEM0000003'), findsOneWidget);
+      await tester.tap(find.text('Search failed. Tap to retry'));
+      await tester.pumpAndSettle();
+      expect(svc.searches, ['', 'ITEM000000', 'ITEM000000']);
+    });
   });
 }
 

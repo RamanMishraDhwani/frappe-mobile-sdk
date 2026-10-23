@@ -816,9 +816,18 @@ class LinkOptionService {
     final titleField = meta.titleField;
 
     final threeTuples = _toThreeTuples(filters);
+    // The title field is always matched, whatever its type, as this method
+    // matched it before; [searchColumnsFor] would drop a type Desk does not
+    // search (Phone, Autocomplete, ...).
+    final columns = searchColumnsFor(meta);
+    if (titleField != null &&
+        titleField.isNotEmpty &&
+        !columns.contains(titleField)) {
+      columns.insert(1, titleField);
+    }
     final orFilters = <List<dynamic>>[
       if (query != null && query.isNotEmpty)
-        for (final column in searchColumnsFor(meta))
+        for (final column in columns)
           if (column == 'name') ...[
             ['server_name', 'like', '%$query%'],
             ['mobile_uuid', 'like', '%$query%'],

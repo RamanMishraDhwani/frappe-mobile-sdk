@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **When a request fails**, the picker loads the full list (`getLinkOptions`, the prefetch used before this change), switches to filtering it in memory and stops searching the server.
     - This applies to a failed first page and to a failed search; for a failed search, the typed text filters the full list at once.
     - If the full list fails too, a failed first page shows "No options available" with Refresh, and a failed search shows "Search failed. Tap to retry" beside the first page's matches.
+    - The same happens when the full list comes back empty beside a non-empty first page, so the picker never stops searching because of an empty answer.
   - **Trade-off on a bad connection.** In online-first mode there is no local copy, so the full list is a server request as well.
     - The fallback helps when the search itself fails (a refused search column, a slow `LIKE`, a dropped request) but a plain list still loads.
     - With no connection at all, a picker offers only its first 10 options and the rows it already found.
@@ -80,7 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`getLinkOptionsOffline(query:)` ignored the text on a doctype with no title field, and matched only the title on the others.**
   - With no `title_field`, the unfiltered list came back. With one, a docname or a `search_fields` value never matched.
   - The query now matches `LIKE %text%` against the docname (`server_name`, or `mobile_uuid` for a row not pushed yet), the title field and `search_fields`, ORed, as the server search does.
-  - On a doctype with a title field, the results are a superset of the previous title-only matches.
+  - The title field is matched whatever its type, as before, even a type Desk does not search (Phone, Autocomplete). On a doctype with a title field, the results are a superset of the previous title-only matches.
 - **A saved Rating showed no stars, and a tap on a star was undone.**
   - Frappe stores a Rating as the fraction `stars ÷ max`: 3 of 5 is `0.6` (`controls/rating.js`). `RatingField` already reads and writes that fraction, but `FieldNormalizer` parsed a Rating as an `int`, and `int.tryParse('0.6')` is `null`. So every stored fraction normalized to `null` and the form's post-frame patch cleared the stars.
   - In reactive mode, a saved rating opened with no stars. In both modes, a tap was undone by the next patch.
