@@ -7,8 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Online-first Link pickers search the server, so every record of a large target is reachable.**
+  - Until now a picker loaded the first 5,000 rows of its target once and filtered them in memory. The typed text never reached the server, so any record past that page could not be found, and nothing said so.
+  - In online-first mode (offline mode disabled) a picker now:
+    - loads the first 10 options;
+    - filters them as the user types;
+    - when the text does not resolve among them, asks the server 500 ms after the last keystroke.
+  - The search matches `LIKE %text%` against `name`, the title field and `search_fields`, which is what Desk's Link control matches. It goes through the same `frappe.client.get_list` path as the prefetch, so labels are built as before.
+  - The text resolves locally when the first page held every match (fewer than 10 rows) or when it equals an option's name or label. A partial match does not stop the search, because the wanted row can be past the first page.
+  - A target with fewer than 10 matching rows behaves exactly as before, including the auto-select of a single option.
+  - Offline-first reads are unchanged.
+- **Migration.** Opt out with `FrappeSDK(linkSearchPolicy: LinkSearchPolicy.disabled)`, or per doctype with `LinkSearchPolicy(prefetchOnlyDoctypes: {...})`.
+  - A `LinkOptionService` subclass built on `withoutResolver()` keeps the full prefetch unless it forwards `usesServerSearch`, `searchPolicy` and `searchLinkOptions`.
+  - `getLinkOptions` is unchanged and still returns up to 5,000 rows to direct callers.
+  - A test double that `implements LinkOptionService` and does not stub `usesServerSearch` (a mocktail `Mock` returns null) keeps the prefetch path, because the picker treats an unanswerable service as "no server search". Stub it to `true` to exercise search.
+
 ### Added
 
+- **`LinkSearchPolicy`**: first-page size, minimum characters, debounce, page length and per-doctype opt-out. Also new: **`LinkOptionService.usesServerSearch`** and **`LinkOptionService.searchLinkOptions`**, plus `SearchableSelect`'s `onSearch` / `optionsComplete` / `onPickOption`.
+- **A log line when `getLinkOptions` hits its 5,000-row cap**, once per doctype, so a truncated list is no longer silent.
 - **`cannot_add_rows` and `cannot_delete_rows` on Table fields, as Frappe Desk honours them.**
   - `DocField` now models both flags (`cannotAddRows`, `cannotDeleteRows`). They are parsed, serialised and carried through the form's effective-props copy.
   - `ChildTableField` hides **Add Row** for the first, and the row delete icon and the edit sheet's **Remove** for the second. Rows stay editable.

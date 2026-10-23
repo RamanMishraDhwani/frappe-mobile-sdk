@@ -16,6 +16,7 @@ export 'src/models/document.dart';
 export 'src/models/mobile_form_name.dart';
 export 'src/models/workflow_transition.dart';
 export 'src/models/link_filter_result.dart';
+export 'src/models/link_search_policy.dart';
 // #53 (A5): outbox types on the public surface so app teams build type-safe
 // outbox UI without reaching into `src/` via implementation_imports.
 export 'src/models/outbox_row.dart'

@@ -4,10 +4,13 @@ import 'package:flutter/foundation.dart';
 
 import '../database/entities/link_option_entity.dart';
 import '../models/doc_field.dart';
+import '../models/doc_type_meta.dart';
 import '../models/link_filter_result.dart';
+import '../models/link_search_policy.dart';
 import '../models/meta_resolver.dart';
 import '../query/unified_resolver.dart';
 import '../utils/depends_on_evaluator.dart';
+import '../utils/sdk_log.dart';
 
 /// Fetches link field options via [UnifiedResolver] (DB-first + background API refresh).
 ///
@@ -25,6 +28,11 @@ class LinkOptionService {
   /// `__()` on link/select titles. Null in tests / when no host is bound.
   final String Function(String)? _translate;
 
+  /// How pickers load and search options in online-first mode. See
+  /// [usesServerSearch].
+  final LinkSearchPolicy _searchPolicy;
+  LinkSearchPolicy get searchPolicy => _searchPolicy;
+
   /// Broadcasts after each closure-pull batch finishes. Wired from
   /// [FrappeSDK.syncComplete$]. Pickers and the [LinkFieldCoordinator]
   /// listen to this to invalidate stale empty caches and re-fetch
@@ -37,10 +45,12 @@ class LinkOptionService {
     MetaResolverFn metaResolver, {
     Stream<void>? syncComplete$,
     String Function(String)? translate,
+    LinkSearchPolicy searchPolicy = const LinkSearchPolicy(),
   }) : _resolver = resolver,
        _metaResolver = metaResolver,
        _syncCompleteStream = syncComplete$,
-       _translate = translate;
+       _translate = translate,
+       _searchPolicy = searchPolicy;
 
   /// Converts Frappe-shaped filter rows to the 3-tuple `[field, op, value]`
   /// shape that [UnifiedResolver.resolve] consumes. Frappe APIs hand back
@@ -68,7 +78,8 @@ class LinkOptionService {
     : _resolver = null,
       _metaResolver = null,
       _syncCompleteStream = null,
-      _translate = null;
+      _translate = null,
+      _searchPolicy = LinkSearchPolicy.disabled;
 
   /// Max entries in [_titleCache]. A Link title is a short string, so 500 caps
   /// the cache in the low tens of KB while still covering a long scroll through
@@ -218,8 +229,18 @@ class LinkOptionService {
       doctype: doctype,
       filters: threeTuples,
       page: 0,
-      pageSize: 5000,
+      pageSize: _prefetchCap,
     );
+    // A full page means the list is truncated and a picker filtering it in
+    // memory cannot reach the rest. Say so once per doctype.
+    if (result.rows.length >= _prefetchCap && _capLogged.add(doctype)) {
+      sdkLog(
+        'LinkOptionService: $doctype returned $_prefetchCap options, the '
+        'prefetch cap; records past it cannot be picked from a list filtered '
+        'in memory. Online-first pickers search the server instead '
+        '(LinkSearchPolicy).',
+      );
+    }
 
     return _rowsToEntities(
       result.rows,
@@ -227,6 +248,133 @@ class LinkOptionService {
       titleField,
       translateLabels: meta.translatedDoctype,
     );
+  }
+
+  static const int _prefetchCap = 5000;
+  final Set<String> _capLogged = <String>{};
+
+  /// Whether a picker for [doctype] loads a short first page and searches the
+  /// server as the user types ([searchLinkOptions]) instead of filtering a
+  /// [getLinkOptions] prefetch in memory.
+  ///
+  /// True only in online-first mode (offline mode disabled) with a client,
+  /// when [searchPolicy] is enabled and does not list [doctype] in
+  /// [LinkSearchPolicy.prefetchOnlyDoctypes]. Always false for a service built
+  /// with [LinkOptionService.withoutResolver], so a subclass that overrides
+  /// only [getLinkOptions] keeps the prefetch.
+  bool usesServerSearch(String doctype) {
+    final resolver = _resolver;
+    if (resolver == null || _metaResolver == null) return false;
+    final policy = _searchPolicy;
+    if (!policy.enabled || policy.prefetchOnlyDoctypes.contains(doctype)) {
+      return false;
+    }
+    return !resolver.offlineMode.enabled && resolver.client != null;
+  }
+
+  /// Options of [doctype] matching [txt], read from the server; at most
+  /// [pageLength] rows. An empty [txt] is the prefetch: the first page.
+  ///
+  /// Matches `LIKE %txt%` against `name`, the title field and the doctype's
+  /// `search_fields`, ORed, and ANDed with [filters]. That is what Desk's Link
+  /// control matches (`frappe.desk.search.search_widget`). Rows whose docname
+  /// starts with [txt] come first, as in Desk. The request is the same
+  /// `frappe.client.get_list` the prefetch makes, so labels are built exactly
+  /// as [getLinkOptions] builds them.
+  ///
+  /// A translated doctype is matched on its translated labels, which only
+  /// exist on the device, so it is fetched whole (as [getLinkOptions]) and
+  /// filtered here. Its result can therefore hold MORE than [pageLength] rows.
+  Future<List<LinkOptionEntity>> searchLinkOptions(
+    String doctype, {
+    required String txt,
+    required int pageLength,
+    List<List<dynamic>>? filters,
+  }) async {
+    final resolver = _resolver;
+    final metaResolver = _metaResolver;
+    if (resolver == null || metaResolver == null) return const [];
+    final meta = await metaResolver(doctype);
+    final q = txt.trim();
+    final lower = q.toLowerCase();
+
+    if (meta.translatedDoctype) {
+      final all = await getLinkOptions(doctype, filters: filters);
+      if (q.isEmpty) return all;
+      return all
+          .where(
+            (o) =>
+                (o.label ?? o.name).toLowerCase().contains(lower) ||
+                o.name.toLowerCase().contains(lower),
+          )
+          .toList();
+    }
+
+    final threeTuples = _toThreeTuples(
+      _normalizeFiltersForDoctype(doctype, filters),
+    );
+    final orFilters = <List<dynamic>>[
+      if (q.isNotEmpty)
+        for (final column in searchColumnsFor(meta)) [column, 'like', '%$q%'],
+    ];
+    final result = await resolver.resolve(
+      doctype: doctype,
+      filters: threeTuples,
+      orFilters: orFilters,
+      page: 0,
+      pageSize: pageLength,
+    );
+    final options = _rowsToEntities(
+      result.rows,
+      doctype,
+      meta.titleField,
+      translateLabels: meta.translatedDoctype,
+    );
+    if (q.isEmpty) return options;
+    bool startsWith(LinkOptionEntity o) =>
+        o.name.toLowerCase().startsWith(lower);
+    return [
+      ...options.where(startsWith),
+      ...options.where((o) => !startsWith(o)),
+    ];
+  }
+
+  /// Field types Desk searches in (`search_widget`).
+  static const Set<String> _searchableTypes = {
+    'Data',
+    'Text',
+    'Small Text',
+    'Long Text',
+    'Link',
+    'Select',
+    'Read Only',
+    'Text Editor',
+  };
+
+  /// The columns a server search matches: `name`, the title field, then each
+  /// `search_fields` entry. Only real fields of a searchable type are kept:
+  /// `search_fields` is free text on the server, and a column that does not
+  /// exist makes Frappe refuse the whole query (HTTP 417).
+  @visibleForTesting
+  static List<String> searchColumnsFor(DocTypeMeta meta) {
+    final types = <String, String>{
+      for (final f in meta.fields)
+        if (f.fieldname != null && f.fieldname!.isNotEmpty)
+          f.fieldname!: f.fieldtype,
+    };
+    final out = <String>['name'];
+    void add(String? raw) {
+      final f = raw?.trim();
+      if (f == null || f.isEmpty || out.contains(f)) return;
+      if (!_searchableTypes.contains(types[f])) return;
+      out.add(f);
+    }
+
+    add(meta.titleField);
+    for (final f in meta.searchFields ?? const <String>[]) {
+      add(f);
+    }
+    return out;
   }
 
   /// Converts resolver rows to [LinkOptionEntity] list.

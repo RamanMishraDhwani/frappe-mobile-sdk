@@ -238,6 +238,16 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
   String _dependentFieldName = '';
   StreamSubscription<void>? _syncSub;
 
+  /// This picker loads a short first page and searches the server as the user
+  /// types ([LinkOptionService.usesServerSearch]).
+  bool _serverSearch = false;
+
+  /// The first page held every match, so typing never needs the server.
+  bool _optionsComplete = true;
+
+  /// Filters the first page was loaded with; every search reuses them.
+  List<List<dynamic>>? _searchFilters;
+
   @override
   void initState() {
     super.initState();
@@ -311,6 +321,12 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
   void _loadOptionsViaCoordinator() {
     final coordinator = widget.linkFieldCoordinator;
     if (coordinator == null || !coordinator.useCoordinator) {
+      _loadOptions();
+      return;
+    }
+    // The coordinator caches one full option list per (doctype, filters); a
+    // server-searched picker loads its own short first page instead.
+    if (_usesServerSearch()) {
       _loadOptions();
       return;
     }
@@ -400,7 +416,26 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
       return;
     }
     try {
-      final options = await widget.linkOptionService.getLinkOptions(
+      final svc = widget.linkOptionService;
+      if (_usesServerSearch()) {
+        final size = svc.searchPolicy.prefetchSize;
+        final options = await svc.searchLinkOptions(
+          widget.linkedDoctype,
+          txt: '',
+          pageLength: size,
+          filters: filters,
+        );
+        if (!mounted) return;
+        _serverSearch = true;
+        _searchFilters = filters;
+        // Fewer rows than asked for: the page holds every match. More: the
+        // service returned its whole list (a translated doctype).
+        _optionsComplete = options.length != size;
+        _applyOptionsAndAutoSelect(await _withHeldValue(options));
+        return;
+      }
+      _serverSearch = false;
+      final options = await svc.getLinkOptions(
         widget.linkedDoctype,
         filters: filters,
       );
@@ -411,11 +446,69 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
       );
       if (!mounted) return;
       setState(() {
+        _serverSearch = false;
         _options = [];
         _isLoading = false;
         _waitingForDependent = false;
       });
     }
+  }
+
+  /// [LinkOptionService.usesServerSearch], answering false when the service
+  /// cannot answer. A host's `implements LinkOptionService` double (e.g. a
+  /// mocktail Mock) that does not stub it returns null, which would throw and
+  /// leave the picker empty; such a service keeps the prefetch, as before.
+  bool _usesServerSearch() {
+    try {
+      return widget.linkOptionService.usesServerSearch(widget.linkedDoctype);
+    } catch (e) {
+      debugPrint(
+        'LinkField: usesServerSearch(${widget.linkedDoctype}) unanswered — '
+        'keeping the prefetch. $e',
+      );
+      return false;
+    }
+  }
+
+  /// Adds the held value as an option carrying its title when the first page
+  /// does not contain it, so a value past that page shows its title rather
+  /// than the raw docname. A complete page is left alone: a held value missing
+  /// from it does not match the filters, exactly as with a full prefetch.
+  Future<List<LinkOptionEntity>> _withHeldValue(
+    List<LinkOptionEntity> options,
+  ) async {
+    final held = widget.value?.toString() ?? '';
+    if (held.isEmpty || _optionsComplete) return options;
+    if (options.any((o) => o.name == held)) return options;
+    String? title;
+    try {
+      title = await widget.linkOptionService.getLinkTitle(
+        widget.linkedDoctype,
+        held,
+      );
+    } catch (e, st) {
+      debugPrint(
+        'LinkField: getLinkTitle(${widget.linkedDoctype}, $held) failed — '
+        '$e\n$st',
+      );
+    }
+    if (title == null || title.isEmpty) return options;
+    return [
+      ...options,
+      LinkOptionEntity(
+        doctype: widget.linkedDoctype,
+        name: held,
+        label: title,
+        lastUpdated: DateTime.now().millisecondsSinceEpoch,
+      ),
+    ];
+  }
+
+  /// Keeps an option picked from a server search, which is not in [_options],
+  /// so its label and locality stay known after the pick.
+  void _keepPickedOption(LinkOptionEntity option) {
+    if (_options.any((o) => o.name == option.name)) return;
+    setState(() => _options = [..._options, option]);
   }
 
   @override
@@ -491,7 +584,9 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
       );
     }
 
-    if (_options.isEmpty) {
+    // A server-searched picker with an empty first page still needs its search
+    // box: the page is only the start of the list.
+    if (_options.isEmpty && (!_serverSearch || _waitingForDependent)) {
       final isWaiting = _waitingForDependent && _dependentFieldName.isNotEmpty;
       // Humanized, not the raw fieldname: this hint is user-facing and used to
       // read "Select diagnostic_framework first".
@@ -548,6 +643,9 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
       if (match == null) selected.add(currentVal);
     }
 
+    // Read only in server-search mode: a service that does not search (or a
+    // test double that does not stub it) is never asked for its policy.
+    final policy = _serverSearch ? widget.linkOptionService.searchPolicy : null;
     return SearchableSelect(
       options: _options,
       selected: selected,
@@ -559,6 +657,18 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
       errorText: widget.errorText,
       pickerMode:
           widget.style?.linkFieldPickerMode ?? LinkFieldPickerMode.inline,
+      onSearch: policy == null
+          ? null
+          : (text) => widget.linkOptionService.searchLinkOptions(
+              widget.linkedDoctype,
+              txt: text,
+              pageLength: policy.pageLength,
+              filters: _searchFilters,
+            ),
+      searchDebounce: policy?.debounce ?? const Duration(milliseconds: 500),
+      searchMinChars: policy?.minChars ?? 2,
+      optionsComplete: !_serverSearch || _optionsComplete,
+      onPickOption: _serverSearch ? _keepPickedOption : null,
       onChanged: (values) {
         final picked = values.isEmpty ? null : values.first;
         widget.onChanged?.call(picked);

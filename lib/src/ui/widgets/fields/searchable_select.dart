@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../database/entities/link_option_entity.dart';
 import 'link_field_picker_mode.dart';
+import 'link_remote_search.dart';
 import 'searchable_select_dialog.dart';
 
 /// Reusable searchable select widget for Frappe Link options.
@@ -10,7 +11,8 @@ import 'searchable_select_dialog.dart';
 /// - **Multi** (`true`): chips for selected values + search -> pick many.
 ///
 /// Call site only needs to supply [options] (pre-loaded) and handle changes.
-/// Option loading is the caller's responsibility.
+/// Option loading is the caller's responsibility. With [onSearch] set, typing
+/// that does not resolve among [options] also asks the caller for more.
 class SearchableSelect extends StatefulWidget {
   const SearchableSelect({
     super.key,
@@ -24,6 +26,11 @@ class SearchableSelect extends StatefulWidget {
     this.labelText,
     this.errorText,
     this.pickerMode = LinkFieldPickerMode.inline,
+    this.onSearch,
+    this.searchDebounce = const Duration(milliseconds: 500),
+    this.searchMinChars = 2,
+    this.optionsComplete = true,
+    this.onPickOption,
   });
 
   /// All available options (already loaded).
@@ -48,6 +55,26 @@ class SearchableSelect extends StatefulWidget {
   final String? errorText;
   final LinkFieldPickerMode pickerMode;
 
+  /// Server search for options beyond [options]. Called [searchDebounce] after
+  /// the last keystroke, once the text has [searchMinChars] characters and
+  /// does not resolve locally; its rows replace the list for that text.
+  ///
+  /// The text resolves locally when [optionsComplete] is true, or when it
+  /// equals an option's name or label. A partial match does NOT stop the
+  /// search: [options] may be only the first page, and the row the user wants
+  /// can be past it.
+  final Future<List<LinkOptionEntity>> Function(String text)? onSearch;
+  final Duration searchDebounce;
+  final int searchMinChars;
+
+  /// True when [options] already hold every match, so [onSearch] is never
+  /// needed.
+  final bool optionsComplete;
+
+  /// Called with the picked option before [onChanged], so a caller can keep an
+  /// option that came from [onSearch] (it is not in [options]).
+  final ValueChanged<LinkOptionEntity>? onPickOption;
+
   @override
   State<SearchableSelect> createState() => _SearchableSelectState();
 }
@@ -57,15 +84,47 @@ class _SearchableSelectState extends State<SearchableSelect> {
   bool _showSuggestions = false;
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
+  LinkRemoteSearch? _remote;
+
+  /// Options picked from a server search, for their labels.
+  final Map<String, LinkOptionEntity> _picked = {};
 
   @override
   void initState() {
     super.initState();
     _focusNode.addListener(_onFocusChange);
+    _syncRemote();
+  }
+
+  @override
+  void didUpdateWidget(SearchableSelect oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if ((oldWidget.onSearch == null) != (widget.onSearch == null)) {
+      _remote?.dispose();
+      _remote = null;
+      _syncRemote();
+    } else if (!identical(oldWidget.options, widget.options)) {
+      // A new first page (e.g. the filters changed): cached terms are stale.
+      _remote?.reset();
+    }
+  }
+
+  void _syncRemote() {
+    final search = widget.onSearch;
+    if (search == null || _remote != null) return;
+    _remote = LinkRemoteSearch(
+      search: (text) => widget.onSearch!(text),
+      debounce: widget.searchDebounce,
+      minChars: widget.searchMinChars,
+      onUpdate: () {
+        if (mounted) setState(() {});
+      },
+    );
   }
 
   @override
   void dispose() {
+    _remote?.dispose();
     _focusNode.removeListener(_onFocusChange);
     _controller.dispose();
     _focusNode.dispose();
@@ -82,20 +141,38 @@ class _SearchableSelectState extends State<SearchableSelect> {
           .where((o) => o.name == name)
           .map((o) => o.label ?? o.name)
           .firstOrNull ??
+      _picked[name]?.label ??
       name;
 
+  bool _resolvesLocally(String text) {
+    if (widget.optionsComplete) return true;
+    final t = text.trim().toLowerCase();
+    return widget.options.any(
+      (o) => o.name.toLowerCase() == t || (o.label ?? '').toLowerCase() == t,
+    );
+  }
+
   List<LinkOptionEntity> get _filtered {
-    return widget.options
-        .where((o) => !widget.selected.contains(o.name))
-        .where(
+    final remote = _remote?.resultsFor(_search);
+    final source =
+        remote ??
+        widget.options.where(
           (o) =>
               _search.isEmpty ||
               (o.label ?? o.name).toLowerCase().contains(_search.toLowerCase()),
-        )
-        .toList();
+        );
+    return source.where((o) => !widget.selected.contains(o.name)).toList();
   }
 
-  void _pick(String name) {
+  void _onSearchChanged(String text) {
+    setState(() => _search = text);
+    _remote?.update(text, resolvedLocally: _resolvesLocally(text));
+  }
+
+  void _pick(LinkOptionEntity option) {
+    final name = option.name;
+    _picked[name] = option;
+    widget.onPickOption?.call(option);
     if (widget.multiSelect) {
       if (widget.selected.contains(name)) return;
       widget.onChanged([...widget.selected, name]);
@@ -103,6 +180,7 @@ class _SearchableSelectState extends State<SearchableSelect> {
       widget.onChanged([name]);
     }
     _controller.clear();
+    _remote?.update('', resolvedLocally: true);
     setState(() {
       _search = '';
       _showSuggestions = false;
@@ -117,6 +195,7 @@ class _SearchableSelectState extends State<SearchableSelect> {
   void _clear() {
     widget.onChanged([]);
     _controller.clear();
+    _remote?.update('', resolvedLocally: true);
     setState(() => _search = '');
   }
 
@@ -131,6 +210,14 @@ class _SearchableSelectState extends State<SearchableSelect> {
           initialSelected: widget.selected,
           multiSelect: widget.multiSelect,
           title: widget.labelText,
+          onSearch: widget.onSearch,
+          searchDebounce: widget.searchDebounce,
+          searchMinChars: widget.searchMinChars,
+          optionsComplete: widget.optionsComplete,
+          onPickOption: (o) {
+            _picked[o.name] = o;
+            widget.onPickOption?.call(o);
+          },
         );
       },
     );
@@ -152,6 +239,8 @@ class _SearchableSelectState extends State<SearchableSelect> {
     final selected = widget.selected;
     final filtered = _filtered;
     final hasValue = selected.isNotEmpty;
+    final searching = _remote?.searching ?? false;
+    final searchError = _remote?.error;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -273,8 +362,11 @@ class _SearchableSelectState extends State<SearchableSelect> {
                 border: const OutlineInputBorder(),
               ),
               style: const TextStyle(fontSize: 14),
-              onChanged: (text) => setState(() => _search = text),
+              onChanged: _onSearchChanged,
             ),
+
+          if (_showSuggestions && searching)
+            const LinearProgressIndicator(minHeight: 2),
 
           // Suggestion list
           if (_showSuggestions && filtered.isNotEmpty)
@@ -300,7 +392,7 @@ class _SearchableSelectState extends State<SearchableSelect> {
                 itemBuilder: (context, index) {
                   final opt = filtered[index];
                   return InkWell(
-                    onTap: () => _pick(opt.name),
+                    onTap: () => _pick(opt),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -316,12 +408,27 @@ class _SearchableSelectState extends State<SearchableSelect> {
               ),
             ),
 
+          // A failed search must not read as "nothing matches".
+          if (_showSuggestions && _search.isNotEmpty && searchError != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: InkWell(
+                onTap: () => _remote?.retry(_search),
+                child: Text(
+                  'Search failed. Tap to retry',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              ),
+            )
           // Empty state
-          if (_showSuggestions && _search.isNotEmpty && filtered.isEmpty)
+          else if (_showSuggestions && _search.isNotEmpty && filtered.isEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                'No matching options',
+                searching ? 'Searching...' : 'No matching options',
                 style: TextStyle(fontSize: 13, color: Colors.grey[600]),
               ),
             ),
