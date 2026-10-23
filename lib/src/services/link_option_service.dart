@@ -50,7 +50,17 @@ class LinkOptionService {
        _metaResolver = metaResolver,
        _syncCompleteStream = syncComplete$,
        _translate = translate,
-       _searchPolicy = searchPolicy;
+       _searchPolicy = searchPolicy {
+    // A finished sync can change any target, so cached first pages go. This
+    // listener is added before any picker exists, so it runs before a picker's
+    // own sync-complete reload asks for a first page again. Only a broadcast
+    // stream is listened to: a single-subscription one can have one listener,
+    // and the pickers listen to it.
+    final stream = syncComplete$;
+    if (stream != null && stream.isBroadcast) {
+      stream.listen((_) => _forgetFirstPages());
+    }
+  }
 
   /// Converts Frappe-shaped filter rows to the 3-tuple `[field, op, value]`
   /// shape that [UnifiedResolver.resolve] consumes. Frappe APIs hand back
@@ -277,10 +287,19 @@ class LinkOptionService {
   ///
   /// Matches `LIKE %txt%` against `name`, the title field and the doctype's
   /// `search_fields`, ORed, and ANDed with [filters]. That is what Desk's Link
-  /// control matches (`frappe.desk.search.search_widget`). Rows whose docname
-  /// starts with [txt] come first, as in Desk. The request is the same
-  /// `frappe.client.get_list` the prefetch makes, so labels are built exactly
-  /// as [getLinkOptions] builds them.
+  /// control matches (`frappe.desk.search.search_widget`). The request is the
+  /// same `frappe.client.get_list` the prefetch makes, so labels are built
+  /// exactly as [getLinkOptions] builds them.
+  ///
+  /// `get_list` returns one page in the doctype's sort order (by default the
+  /// most recently modified first), so when that page comes back full a
+  /// second request asks for exact matches (`=` on the same columns, same
+  /// [filters]). An exact match past the page is then still returned. Rows whose docname or label equals [txt] come first, then
+  /// docnames starting with [txt], then the rest in the server's order. Desk
+  /// ranks in SQL instead; `order_by` is not used here because the typed text
+  /// would have to go inside the SQL expression. `=` follows the database
+  /// collation: case-insensitive on MariaDB's default, case-sensitive on
+  /// Postgres.
   ///
   /// A translated doctype is matched on its translated labels, which only
   /// exist on the device, so it is fetched whole (as [getLinkOptions]) and
@@ -291,6 +310,7 @@ class LinkOptionService {
     required int pageLength,
     List<List<dynamic>>? filters,
   }) async {
+    assert(pageLength >= 1, 'pageLength must be at least 1');
     final resolver = _resolver;
     final metaResolver = _metaResolver;
     if (resolver == null || metaResolver == null) return const [];
@@ -299,12 +319,13 @@ class LinkOptionService {
     // Offline mode switched on while a picker was open: a server-shaped query
     // would fail against the local mirror, so search what is on the device.
     if (resolver.offlineMode.enabled) {
-      return getLinkOptionsOffline(
+      final options = await getLinkOptionsOffline(
         doctype: doctype,
         filters: filters,
         query: q.isEmpty ? null : q,
         pageSize: pageLength,
       );
+      return q.isEmpty ? options : _rankForText(options, q);
     }
 
     if (q.isNotEmpty) {
@@ -318,23 +339,80 @@ class LinkOptionService {
         DateTime.now().difference(cached.at) < _firstPageTtl) {
       return cached.options;
     }
-    return _firstPageInFlight[key] ??=
-        _searchServer(doctype, q, pageLength, filters)
-            .then((options) {
-              _firstPages[key] = _FirstPage(options, DateTime.now());
-              return options;
-            })
-            .whenComplete(() {
-              // A block body on purpose: `=> remove(key)` returns the very
-              // future being completed, and whenComplete would wait on itself.
-              _firstPageInFlight.remove(key);
-            });
+    final inFlight = _firstPageInFlight[key];
+    if (inFlight != null) return inFlight;
+    // A sync that finishes while this request is out makes its answer stale:
+    // it is still returned to the pickers that asked, but not cached.
+    final generation = _firstPageGeneration;
+    late final Future<List<LinkOptionEntity>> request;
+    request = _searchServer(doctype, q, pageLength, filters)
+        .then((options) {
+          if (generation == _firstPageGeneration) {
+            _cacheFirstPage(key, options);
+          }
+          return options;
+        })
+        .whenComplete(() {
+          // A block body on purpose: `=> remove(key)` returns the very
+          // future being completed, and whenComplete would wait on itself.
+          if (identical(_firstPageInFlight[key], request)) {
+            _firstPageInFlight.remove(key);
+          }
+        });
+    return _firstPageInFlight[key] = request;
   }
 
   static const Duration _firstPageTtl = Duration(seconds: 30);
+
+  /// Most first pages kept at once. Entries also expire after [_firstPageTtl]
+  /// and are dropped on the next write.
+  static const int _firstPagesMax = 50;
   final Map<String, _FirstPage> _firstPages = <String, _FirstPage>{};
   final Map<String, Future<List<LinkOptionEntity>>> _firstPageInFlight =
       <String, Future<List<LinkOptionEntity>>>{};
+
+  /// Bumped by every finished sync; see [searchLinkOptions].
+  int _firstPageGeneration = 0;
+
+  void _cacheFirstPage(String key, List<LinkOptionEntity> options) {
+    final now = DateTime.now();
+    _firstPages.removeWhere((_, p) => now.difference(p.at) >= _firstPageTtl);
+    _firstPages.remove(key);
+    _firstPages[key] = _FirstPage(options, now);
+    if (_firstPages.length > _firstPagesMax) {
+      _firstPages.remove(_firstPages.keys.first);
+    }
+  }
+
+  void _forgetFirstPages() {
+    _firstPageGeneration++;
+    _firstPages.clear();
+    _firstPageInFlight.clear();
+  }
+
+  /// [options] ordered for the typed text [q]: an exact docname or label
+  /// match first, then docnames starting with [q], then the rest. Each group
+  /// keeps the order it was given in.
+  static List<LinkOptionEntity> _rankForText(
+    List<LinkOptionEntity> options,
+    String q,
+  ) {
+    final t = q.toLowerCase();
+    final exact = <LinkOptionEntity>[];
+    final prefix = <LinkOptionEntity>[];
+    final rest = <LinkOptionEntity>[];
+    for (final o in options) {
+      final name = o.name.toLowerCase();
+      if (name == t || o.label?.toLowerCase() == t) {
+        exact.add(o);
+      } else if (name.startsWith(t)) {
+        prefix.add(o);
+      } else {
+        rest.add(o);
+      }
+    }
+    return [...exact, ...prefix, ...rest];
+  }
 
   Future<List<LinkOptionEntity>> _searchServer(
     String doctype,
@@ -361,30 +439,56 @@ class LinkOptionService {
     final threeTuples = _toThreeTuples(
       _normalizeFiltersForDoctype(doctype, filters),
     );
-    final orFilters = <List<dynamic>>[
-      if (q.isNotEmpty)
-        for (final column in searchColumnsFor(meta)) [column, 'like', '%$q%'],
-    ];
-    final result = await resolver.resolve(
-      doctype: doctype,
-      filters: threeTuples,
-      orFilters: orFilters,
-      page: 0,
-      pageSize: pageLength,
-    );
-    final options = _rowsToEntities(
-      result.rows,
-      doctype,
-      meta.titleField,
-      translateLabels: meta.translatedDoctype,
-    );
+    final columns = searchColumnsFor(meta);
+    // [op] and [value] apply to every search column, ORed; none for the
+    // first page.
+    Future<List<Map<String, Object?>>> fetch(String op, String value) async {
+      final result = await resolver.resolve(
+        doctype: doctype,
+        filters: threeTuples,
+        orFilters: [
+          if (q.isNotEmpty)
+            for (final column in columns) [column, op, value],
+        ],
+        page: 0,
+        pageSize: pageLength,
+      );
+      return result.rows;
+    }
+
+    List<LinkOptionEntity> toOptions(List<Map<String, Object?>> rows) =>
+        _rowsToEntities(
+          rows,
+          doctype,
+          meta.titleField,
+          translateLabels: meta.translatedDoctype,
+        );
+
+    final rows = await fetch('like', '%$q%');
+    final options = toOptions(rows);
     if (q.isEmpty) return options;
-    bool startsWith(LinkOptionEntity o) =>
-        o.name.toLowerCase().startsWith(lower);
-    return [
-      ...options.where(startsWith),
-      ...options.where((o) => !startsWith(o)),
-    ];
+
+    // A full page may have cut off an exact match: `get_list` returns the
+    // first page in the doctype's sort order (by default, most recently
+    // modified). A page that is not full holds every match.
+    var exact = const <LinkOptionEntity>[];
+    if (rows.length >= pageLength) {
+      try {
+        exact = toOptions(await fetch('=', q));
+      } catch (e, st) {
+        // The LIKE page already answered; keep it rather than fail.
+        sdkLog(
+          'LinkOptionService: exact-match search on $doctype failed, '
+          'showing the LIKE page only — $e\n$st',
+        );
+      }
+    }
+    final seen = <String>{};
+    final merged = [
+      ...exact,
+      ...options,
+    ].where((o) => seen.add(o.name)).toList();
+    return _rankForText(merged, q).take(pageLength).toList();
   }
 
   /// Field types Desk searches in (`search_widget`).
@@ -693,7 +797,10 @@ class LinkOptionService {
   ///
   /// Delegates to the stored [UnifiedResolver]. The [filters] accept Frappe
   /// 4-tuple `[doctype, field, op, value]` or 3-tuple `[field, op, value]`
-  /// form. [query] becomes a `LIKE %...%` search on the doctype's title field.
+  /// form. [query] becomes a `LIKE %...%` search on the docname, the title
+  /// field and the doctype's `search_fields`, ORed, as [searchLinkOptions]
+  /// searches the server. Locally the docname is `server_name`, or
+  /// `mobile_uuid` for a row not pushed yet.
   Future<List<LinkOptionEntity>> getLinkOptionsOffline({
     required String doctype,
     List<List<dynamic>>? filters,
@@ -709,13 +816,20 @@ class LinkOptionService {
     final titleField = meta.titleField;
 
     final threeTuples = _toThreeTuples(filters);
-    if (query != null && query.isNotEmpty && titleField != null) {
-      threeTuples.add([titleField, 'like', '%$query%']);
-    }
+    final orFilters = <List<dynamic>>[
+      if (query != null && query.isNotEmpty)
+        for (final column in searchColumnsFor(meta))
+          if (column == 'name') ...[
+            ['server_name', 'like', '%$query%'],
+            ['mobile_uuid', 'like', '%$query%'],
+          ] else
+            [column, 'like', '%$query%'],
+    ];
 
     final result = await resolver.resolve(
       doctype: doctype,
       filters: threeTuples,
+      orFilters: orFilters,
       page: page,
       pageSize: pageSize,
     );

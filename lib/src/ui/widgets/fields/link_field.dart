@@ -291,7 +291,12 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
     super.dispose();
   }
 
-  void _applyOptionsAndAutoSelect(List<LinkOptionEntity> options) {
+  /// [autoSelect] false skips the single-option preselect: a server-searched
+  /// first page that may not hold every match.
+  void _applyOptionsAndAutoSelect(
+    List<LinkOptionEntity> options, {
+    bool autoSelect = true,
+  }) {
     if (!mounted) return;
     setState(() {
       _options = options;
@@ -300,7 +305,10 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
     });
     // `widget.enabled` already folds in `field.readOnly` (see the call site in
     // [LinkField.buildField]), so this one clause covers both.
-    if (options.length == 1 && widget.allowPreselect && widget.enabled) {
+    if (autoSelect &&
+        options.length == 1 &&
+        widget.allowPreselect &&
+        widget.enabled) {
       final currentVal = widget.value?.toString();
       final hasValidSelection =
           currentVal != null &&
@@ -428,12 +436,34 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
       final svc = widget.linkOptionService;
       if (_usesServerSearch()) {
         final size = svc.searchPolicy.prefetchSize;
-        final options = await svc.searchLinkOptions(
-          widget.linkedDoctype,
-          txt: '',
-          pageLength: size,
-          filters: filters,
-        );
+        final List<LinkOptionEntity> options;
+        try {
+          options = await svc.searchLinkOptions(
+            widget.linkedDoctype,
+            txt: '',
+            pageLength: size,
+            filters: filters,
+          );
+        } catch (e, st) {
+          // Load the full list instead, as before server search: it is
+          // filtered in memory and typing never needs the server. If that
+          // fails too, the catch below shows the empty state with Refresh.
+          sdkLog(
+            'LinkField: first page of ${widget.linkedDoctype} failed, '
+            'loading the full list — $e\n$st',
+          );
+          if (!mounted || gen != _loadGen) return;
+          final all = await svc.getLinkOptions(
+            widget.linkedDoctype,
+            filters: filters,
+          );
+          if (!mounted || gen != _loadGen) return;
+          _serverSearch = false;
+          _searchFilters = filters;
+          _optionsComplete = true;
+          _applyOptionsAndAutoSelect(all);
+          return;
+        }
         if (!mounted || gen != _loadGen) return;
         // More rows than asked for: the service returned its whole list (a
         // translated doctype, matched on device-side labels). Filter that in
@@ -445,7 +475,7 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
         _optionsComplete = wholeList || options.length < size;
         final withHeld = await _withHeldValue(options);
         if (!mounted || gen != _loadGen) return;
-        _applyOptionsAndAutoSelect(withHeld);
+        _applyOptionsAndAutoSelect(withHeld, autoSelect: _optionsComplete);
         return;
       }
       _serverSearch = false;
@@ -541,6 +571,78 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
   void _keepPickedOption(LinkOptionEntity option) {
     if (_options.any((o) => o.name == option.name)) return;
     setState(() => _options = [..._options, option]);
+  }
+
+  /// The server search behind the picker. When it fails, the full list is
+  /// loaded once ([_loadFullListAfterFailedSearch]) and the typed text
+  /// filters it, so the picker no longer depends on the server. If the full
+  /// list fails too, the search error stands ("Search failed").
+  Future<List<LinkOptionEntity>> _search(String text) async {
+    final svc = widget.linkOptionService;
+    try {
+      return await svc.searchLinkOptions(
+        widget.linkedDoctype,
+        txt: text,
+        pageLength: svc.searchPolicy.pageLength,
+        filters: _searchFilters,
+      );
+    } catch (e, st) {
+      sdkLog(
+        'LinkField: search of ${widget.linkedDoctype} for "$text" failed, '
+        'loading the full list — $e\n$st',
+      );
+      final all = await _loadFullListAfterFailedSearch();
+      if (all == null) rethrow;
+      final q = text.trim().toLowerCase();
+      return all
+          .where(
+            (o) =>
+                (o.label ?? o.name).toLowerCase().contains(q) ||
+                o.name.toLowerCase().contains(q),
+          )
+          .toList();
+    }
+  }
+
+  /// The full-list load started by a failed search, and the [_loadGen] it
+  /// belongs to: concurrent failures share it, and a reload starts over.
+  Future<List<LinkOptionEntity>?>? _fullListLoad;
+  int _fullListLoadGen = -1;
+
+  /// Loads the full list (the prefetch the picker used before server search)
+  /// and switches the picker to it: in-memory filtering, no more server
+  /// searches. Options already held (the first page, the held value, rows
+  /// picked from a search) are kept. Null when the load failed or a reload
+  /// made it stale.
+  Future<List<LinkOptionEntity>?> _loadFullListAfterFailedSearch() {
+    final pending = _fullListLoad;
+    if (pending != null && _fullListLoadGen == _loadGen) return pending;
+    final gen = _loadGen;
+    _fullListLoadGen = gen;
+    return _fullListLoad = () async {
+      try {
+        final all = await widget.linkOptionService.getLinkOptions(
+          widget.linkedDoctype,
+          filters: _searchFilters,
+        );
+        if (!mounted || gen != _loadGen) return null;
+        final seen = <String>{for (final o in all) o.name};
+        setState(() {
+          _options = [...all, ..._options.where((o) => seen.add(o.name))];
+          _serverSearch = false;
+          _optionsComplete = true;
+        });
+        return all;
+      } catch (e, st) {
+        sdkLog(
+          'LinkField: full list of ${widget.linkedDoctype} failed too — '
+          '$e\n$st',
+        );
+        // Let the next failed search try again.
+        if (_fullListLoadGen == gen) _fullListLoad = null;
+        return null;
+      }
+    }();
   }
 
   @override
@@ -694,14 +796,7 @@ class _LinkFieldDropdownState extends State<_LinkFieldDropdown> {
       errorText: widget.errorText,
       pickerMode:
           widget.style?.linkFieldPickerMode ?? LinkFieldPickerMode.inline,
-      onSearch: policy == null
-          ? null
-          : (text) => widget.linkOptionService.searchLinkOptions(
-              widget.linkedDoctype,
-              txt: text,
-              pageLength: policy.pageLength,
-              filters: _searchFilters,
-            ),
+      onSearch: policy == null ? null : _search,
       searchDebounce: policy?.debounce ?? const Duration(milliseconds: 500),
       searchMinChars: policy?.minChars ?? 2,
       optionsComplete: !_serverSearch || _optionsComplete,

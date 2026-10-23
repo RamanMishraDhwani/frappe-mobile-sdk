@@ -235,7 +235,154 @@ void main() {
     expect(svc.prefetches, 1);
     expect(find.byType(TextField), findsOneWidget);
   });
+
+  group('a failed server request falls back to the full list', () {
+    testWidgets('first page fails: the full list loads and is filtered in '
+        'memory, never searched', (tester) async {
+      final svc = _FlakyService(
+        firstPage: _tenRows,
+        failFirstPage: true,
+        fullList: _fullList,
+      );
+      await tester.pumpWidget(
+        _wrap(LinkField(field: _field(), linkOptionService: svc)),
+      );
+      await tester.pumpAndSettle();
+      expect(svc.prefetches, 1);
+      await _type(tester, 'ACME0WID');
+      expect(find.text('ACME0WIDGET'), findsOneWidget);
+      expect(find.textContaining('Search failed'), findsNothing);
+      // The whole list is held, so typing never asks the server again.
+      expect(svc.searches, ['']);
+    });
+
+    testWidgets('first page and full list both fail: the empty state with '
+        'Refresh, as before', (tester) async {
+      final svc = _FlakyService(
+        firstPage: _tenRows,
+        failFirstPage: true,
+        failFullList: true,
+      );
+      await tester.pumpWidget(
+        _wrap(LinkField(field: _field(), linkOptionService: svc)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('No options available'), findsWidgets);
+      expect(find.byIcon(Icons.refresh), findsOneWidget);
+    });
+
+    testWidgets('a typed search fails: the full list loads once, the typed '
+        'text filters it, and later typing stays on the device', (
+      tester,
+    ) async {
+      final svc = _FlakyService(
+        firstPage: _tenRows,
+        failSearch: true,
+        fullList: _fullList,
+      );
+      final picked = <dynamic>[];
+      await tester.pumpWidget(
+        _wrap(
+          LinkField(
+            field: _field(),
+            linkOptionService: svc,
+            onChanged: picked.add,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await _type(tester, 'ACME0WID');
+      expect(svc.searches, ['', 'ACME0WID']);
+      expect(svc.prefetches, 1);
+      expect(find.textContaining('Search failed'), findsNothing);
+      expect(find.text('ACME0WIDGET'), findsOneWidget);
+      // A row past the first page, typed after the fallback: no new request.
+      // Part of the label, so the only full label on screen is the row.
+      await tester.enterText(find.byType(TextField), '0000014');
+      await tester.pump(const Duration(milliseconds: 150));
+      await tester.pumpAndSettle();
+      expect(find.text('ITEM0000014'), findsOneWidget);
+      expect(svc.searches, ['', 'ACME0WID']);
+      expect(svc.prefetches, 1);
+      await tester.tap(find.text('ITEM0000014'));
+      await tester.pumpAndSettle();
+      expect(picked, ['14']);
+    });
+
+    testWidgets('a typed search and the full list both fail: the first page '
+        'stays and the search says it failed', (tester) async {
+      final svc = _FlakyService(
+        firstPage: _tenRows,
+        failSearch: true,
+        failFullList: true,
+      );
+      await tester.pumpWidget(
+        _wrap(LinkField(field: _field(), linkOptionService: svc)),
+      );
+      await tester.pumpAndSettle();
+      await _type(tester, 'ITEM000000');
+      expect(find.text('Search failed. Tap to retry'), findsOneWidget);
+      // The first page's matches are still listed.
+      expect(find.text('ITEM0000003'), findsOneWidget);
+      expect(svc.prefetches, 1);
+    });
+  });
 }
+
+/// A server-searched target whose first page and/or typed searches fail, as on
+/// a dropped connection, while the full list may still load.
+class _FlakyService extends _ServerSearchService {
+  _FlakyService({
+    required super.firstPage,
+    this.failFirstPage = false,
+    this.failSearch = false,
+    this.failFullList = false,
+    this.fullList = const [],
+  });
+
+  final bool failFirstPage;
+  final bool failSearch;
+  final bool failFullList;
+  final List<LinkOptionEntity> fullList;
+
+  @override
+  Future<List<LinkOptionEntity>> getLinkOptions(
+    String doctype, {
+    List<List<dynamic>>? filters,
+  }) async {
+    prefetches++;
+    if (failFullList) throw Exception('connection reset');
+    return fullList;
+  }
+
+  @override
+  Future<List<LinkOptionEntity>> searchLinkOptions(
+    String doctype, {
+    required String txt,
+    required int pageLength,
+    List<List<dynamic>>? filters,
+  }) async {
+    searches.add(txt);
+    pageLengths.add(pageLength);
+    if (txt.isEmpty ? failFirstPage : failSearch) {
+      throw Exception('connection reset');
+    }
+    return txt.isEmpty ? firstPage : results;
+  }
+}
+
+Future<void> _type(WidgetTester tester, String text) async {
+  await tester.tap(find.byType(TextField));
+  await tester.enterText(find.byType(TextField), text);
+  await tester.pump(const Duration(milliseconds: 150));
+  await tester.pumpAndSettle();
+}
+
+final List<LinkOptionEntity> _fullList = [
+  ..._tenRows,
+  for (var i = 10; i < 15; i++) _opt('$i', 'ITEM00000$i'),
+  _opt('4205', 'ACME0WIDGET'),
+];
 
 /// A host double that cannot answer the new question, like an unstubbed
 /// mocktail `implements LinkOptionService` (it returns null, which throws).

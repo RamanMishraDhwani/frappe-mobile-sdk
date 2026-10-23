@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:frappe_mobile_sdk/src/api/client.dart';
 import 'package:frappe_mobile_sdk/src/database/daos/doctype_meta_dao.dart';
+import 'package:frappe_mobile_sdk/src/database/normalize_for_search.dart';
+import 'package:frappe_mobile_sdk/src/database/schema/parent_schema.dart';
+import 'package:frappe_mobile_sdk/src/database/schema/system_tables.dart';
 import 'package:frappe_mobile_sdk/src/models/doc_field.dart';
 import 'package:frappe_mobile_sdk/src/models/doc_type_meta.dart';
 import 'package:frappe_mobile_sdk/src/models/link_search_policy.dart';
@@ -12,15 +16,18 @@ import 'package:frappe_mobile_sdk/src/services/link_option_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-/// Answers every get_list with [rows] and records what reached the server.
+/// Answers every get_list with [rows] (or per request, with [_answer]) and
+/// records what reached the server.
 class _Server extends http.BaseClient {
-  _Server(this.rows);
-  final List<Map<String, Object?>> rows;
+  _Server(List<Map<String, Object?>> rows) : _answer = ((_) => rows);
+  _Server.answering(this._answer);
+  final List<Map<String, Object?>> Function(Uri url) _answer;
   final List<Uri> seen = [];
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     seen.add(request.url);
+    final rows = _answer(request.url);
     return http.StreamedResponse(
       Stream.fromIterable([
         utf8.encode(jsonEncode({'message': rows})),
@@ -28,6 +35,73 @@ class _Server extends http.BaseClient {
       200,
       headers: const {'content-type': 'application/json'},
     );
+  }
+}
+
+/// The or_filters a request carried, decoded (empty when it sent none).
+List<dynamic> _orFilters(Uri url) {
+  final raw = url.queryParameters['or_filters'];
+  return raw == null ? const [] : jsonDecode(raw) as List<dynamic>;
+}
+
+/// A target with no title field and no search fields.
+DocTypeMeta _plainMeta(String name) => DocTypeMeta(
+  name: name,
+  fields: [DocField(fieldname: 'notes', fieldtype: 'Data')],
+);
+
+DocTypeMeta _meta(String name) =>
+    name == 'Plain Code' ? _plainMeta(name) : _codeMeta(name);
+
+/// Creates the local mirror of [meta] the way a pull does, with [rows].
+Future<void> _seedLocal(
+  Database db,
+  DocTypeMeta meta,
+  String table,
+  List<Map<String, Object?>> rows,
+) async {
+  await db.execute('''
+    CREATE TABLE IF NOT EXISTS doctype_meta (
+      doctype TEXT PRIMARY KEY,
+      modified TEXT,
+      serverModifiedAt TEXT,
+      isMobileForm INTEGER NOT NULL DEFAULT 0,
+      metaJson TEXT NOT NULL,
+      groupName TEXT,
+      sortOrder INTEGER
+    )
+  ''');
+  for (final s in doctypeMetaExtensionsDDL()) {
+    try {
+      await db.execute(s);
+    } on DatabaseException {
+      // Column already added by an earlier seed in this test.
+    }
+  }
+  for (final s in systemTablesDDL()) {
+    await db.execute(s);
+  }
+  for (final s in buildParentSchemaDDL(meta, tableName: table)) {
+    await db.execute(s);
+  }
+  await db.insert('doctype_meta', {
+    'doctype': meta.name,
+    'metaJson': jsonEncode(meta.toJson()),
+    'isMobileForm': 0,
+    'table_name': table,
+  });
+  var i = 0;
+  for (final row in rows) {
+    i++;
+    await db.insert(table, {
+      'mobile_uuid': 'uuid-$i',
+      'sync_status': 'synced',
+      'local_modified': i,
+      ...row,
+      for (final f in meta.normFieldNames)
+        if (row[f] is String)
+          '${f}__norm': normalizeForSearch(row[f] as String),
+    });
   }
 }
 
@@ -71,13 +145,14 @@ void main() {
     bool offline = false,
     bool withClient = true,
     LinkSearchPolicy policy = const LinkSearchPolicy(),
+    Stream<void>? syncComplete,
   }) {
     final resolver = UnifiedResolver(
       db: db,
       metaDao: DoctypeMetaDao(db),
       isOnline: () => true,
       backgroundFetch: (_, _) async {},
-      metaResolver: (n) async => _codeMeta(n),
+      metaResolver: (n) async => _meta(n),
       offlineMode: OfflineMode(enabled: offline, isPersisted: true),
       client: withClient
           ? FrappeClient('http://localhost', httpClient: server)
@@ -85,8 +160,9 @@ void main() {
     );
     return LinkOptionService(
       resolver,
-      (n) async => _codeMeta(n),
+      (n) async => _meta(n),
       searchPolicy: policy,
+      syncComplete$: syncComplete,
     );
   }
 
@@ -177,6 +253,80 @@ void main() {
       expect(out.map((o) => o.name), ['4205', '9009']);
       expect(out.first.label, 'ACME0WIDGET');
     });
+
+    test('a full page also asks for exact matches, so an exact match older '
+        'than the page is returned, first', () async {
+      // The LIKE request answers with the 20 most recently modified matches,
+      // none of them the exact one; only the `=` request finds it.
+      server = _Server.answering((url) {
+        final or = _orFilters(url);
+        if (or.isNotEmpty && or.every((c) => (c as List)[1] == '=')) {
+          return [
+            {'name': 'ACME', 'product_code': 'OLDEST'},
+          ];
+        }
+        return [
+          for (var i = 0; i < 19; i++)
+            {'name': 'X-ACME-$i', 'product_code': 'P$i'},
+          {'name': 'ACME-PREFIX', 'product_code': 'P19'},
+        ];
+      });
+      final out = await service().searchLinkOptions(
+        'Product Code',
+        txt: 'ACME',
+        pageLength: 20,
+        filters: [
+          ['Product Code', 'is_active', '=', 1],
+        ],
+      );
+      expect(server.seen, hasLength(2));
+      final exact = server.seen.last.queryParameters;
+      expect(jsonDecode(exact['or_filters']!), [
+        ['name', '=', 'ACME'],
+        ['product_code', '=', 'ACME'],
+        ['brand_name', '=', 'ACME'],
+        ['category_name', '=', 'ACME'],
+      ]);
+      // Both requests keep the link filters.
+      for (final url in server.seen) {
+        expect(jsonDecode(url.queryParameters['filters']!), [
+          ['is_active', '=', 1],
+        ]);
+      }
+      // Exact match first, then the docname prefix, then the rest; one page.
+      expect(out.first.name, 'ACME');
+      expect(out[1].name, 'ACME-PREFIX');
+      expect(out, hasLength(20));
+    });
+
+    test(
+      'a page that is not full holds every match: no exact request',
+      () async {
+        await service().searchLinkOptions(
+          'Product Code',
+          txt: 'ACME',
+          pageLength: 20,
+        );
+        expect(server.seen, hasLength(1));
+      },
+    );
+
+    test(
+      'an exact docname or title match ranks before docname prefixes',
+      () async {
+        server = _Server([
+          {'name': '4205-B', 'product_code': 'Z1'},
+          {'name': '9009', 'product_code': '4205'},
+          {'name': '4205', 'product_code': 'Z2'},
+        ]);
+        final out = await service().searchLinkOptions(
+          'Product Code',
+          txt: '4205',
+          pageLength: 20,
+        );
+        expect(out.map((o) => o.name), ['9009', '4205', '4205-B']);
+      },
+    );
   });
 
   group('first page', () {
@@ -211,16 +361,82 @@ void main() {
       await svc.searchLinkOptions('Product Code', txt: 'ACME', pageLength: 20);
       expect(server.seen, hasLength(2));
     });
+
+    test('a finished sync drops the cached first pages', () async {
+      final sync = StreamController<void>.broadcast();
+      addTearDown(sync.close);
+      final svc = service(syncComplete: sync.stream);
+      await svc.searchLinkOptions('Product Code', txt: '', pageLength: 10);
+      sync.add(null);
+      await Future<void>.delayed(Duration.zero);
+      await svc.searchLinkOptions('Product Code', txt: '', pageLength: 10);
+      expect(server.seen, hasLength(2));
+    });
   });
 
-  test('offline mode switched on: never sends a server-shaped query', () async {
-    final svc = service(offline: true);
-    try {
-      await svc.searchLinkOptions('Product Code', txt: 'ACME', pageLength: 20);
-    } catch (_) {
-      // No local table in this harness; what matters is the server path.
+  group('offline mode switched on: searches the device', () {
+    final rows = <Map<String, Object?>>[
+      {
+        'server_name': '4205',
+        'product_code': 'ACME0WIDGET',
+        'brand_name': 'Brand Alpha',
+        'category_name': 'Tools',
+      },
+      {
+        'server_name': '9009',
+        'product_code': 'ZX-1',
+        'brand_name': 'Brand Beta',
+        'category_name': 'Gadgets',
+      },
+      {
+        'server_name': '7001',
+        'product_code': 'QR-2',
+        'brand_name': 'Brand Gamma',
+        'category_name': 'Parts',
+      },
+    ];
+
+    Future<List<String>> search(
+      String txt, {
+      String doctype = 'Product Code',
+    }) async {
+      final out = await service(
+        offline: true,
+      ).searchLinkOptions(doctype, txt: txt, pageLength: 20);
+      return out.map((o) => o.name).toList();
     }
-    expect(server.seen, isEmpty);
+
+    setUp(() async {
+      await _seedLocal(
+        db,
+        _codeMeta('Product Code'),
+        'docs__product_code',
+        rows,
+      );
+    });
+
+    test('never sends a server-shaped query, and returns only the rows '
+        'whose title matches', () async {
+      expect(await search('ACME0'), ['4205']);
+      expect(server.seen, isEmpty);
+    });
+
+    test('matches the docname', () async {
+      expect(await search('9009'), ['9009']);
+    });
+
+    test('matches a search_fields column', () async {
+      expect(await search('gadget'), ['9009']);
+      expect(await search('gamma'), ['7001']);
+    });
+
+    test('a target with no title field is still filtered by docname', () async {
+      await _seedLocal(db, _plainMeta('Plain Code'), 'docs__plain_code', [
+        {'server_name': 'PLAIN-1', 'notes': 'first'},
+        {'server_name': 'OTHER-2', 'notes': 'second'},
+      ]);
+      expect(await search('plain', doctype: 'Plain Code'), ['PLAIN-1']);
+    });
   });
 
   test('searchColumnsFor keeps name, then real searchable fields once', () {

@@ -16,15 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - filters them as the user types;
     - when the text does not resolve among them, asks the server 500 ms after the last keystroke.
   - The search matches `LIKE %text%` against `name`, the title field and `search_fields`, which is what Desk's Link control matches. It goes through the same `frappe.client.get_list` path as the prefetch, so labels are built as before.
+  - `get_list` returns one page of matches (20 by default) in the doctype's sort order, by default the most recently modified first. When that page comes back full, a second request asks for exact matches (`=` on the same columns, same filters), so an exact docname or title match past that page is still listed.
+    - Results are ranked: exact docname or label first, then docnames starting with the text, then the rest in server order.
+    - Desk ranks by relevance in SQL. The SDK sends no `order_by` expression, because the typed text would have to go inside it.
+    - `=` follows the database collation: case-insensitive on MariaDB's default, case-sensitive on Postgres.
+  - **When a request fails**, the picker loads the full list (`getLinkOptions`, the prefetch used before this change), switches to filtering it in memory and stops searching the server.
+    - This applies to a failed first page and to a failed search; for a failed search, the typed text filters the full list at once.
+    - If the full list fails too, a failed first page shows "No options available" with Refresh, and a failed search shows "Search failed. Tap to retry" beside the first page's matches.
+  - **Trade-off on a bad connection.** In online-first mode there is no local copy, so the full list is a server request as well.
+    - The fallback helps when the search itself fails (a refused search column, a slow `LIKE`, a dropped request) but a plain list still loads.
+    - With no connection at all, a picker offers only its first 10 options and the rows it already found.
+    - Before this change, a picker that loaded its full list before the connection dropped kept all of it.
+    - Pickers that must work through outages should use offline mode, or keep the prefetch with `LinkSearchPolicy(prefetchOnlyDoctypes: {...})`.
   - The text resolves locally only when the first page held every match (fewer than 10 rows) or when it equals an option's docname.
     - A label match does not stop the search, because labels repeat and a namesake can be past the first page.
     - A partial match does not stop it either.
   - Server rows come first, followed by any local matches the server did not return, so a reply never hides a row the user just saw. The inline picker now also matches docnames, as the dialog already did.
   - A target with fewer than 10 matching rows behaves exactly as before, including the auto-select of a single option and the "No options available" + Refresh state for zero rows.
-  - Pickers on the same target and filters share one first-page request, reused for 30 seconds. The form-load prefetch skips server-searched targets.
+  - Pickers on the same target and filters share one first-page request, reused for 30 seconds and dropped when a sync finishes. The form-load prefetch skips server-searched targets.
   - Only the newest load of a picker applies its result.
   - A value set after the first page loaded gets its title.
-  - If offline mode is switched on while a picker is open, it searches the device.
+  - If offline mode is switched on while a picker is open, it searches the device, on docname, title field and `search_fields`.
   - A translated doctype keeps the full in-memory list.
   - Offline-first reads are unchanged.
 - **Migration.** Opt out with `FrappeSDK(linkSearchPolicy: LinkSearchPolicy.disabled)`, or per doctype with `LinkSearchPolicy(prefetchOnlyDoctypes: {...})`.
@@ -46,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`LinkSearchPolicy`**: first-page size, minimum characters, debounce, page length and per-doctype opt-out. Also new: **`LinkOptionService.usesServerSearch`** and **`LinkOptionService.searchLinkOptions`**, plus `SearchableSelect`'s `onSearch` / `optionsComplete` / `onPickOption`.
+  - `pageLength` must be at least 1, because Frappe reads `limit_page_length=0` as "no limit".
+  - `prefetchSize` must be at least 2: with a first page of 1, a lone option cannot be told from the first of many, and it was auto-selected.
+  - Both are asserted. A first page that may not hold every match is never auto-selected.
 - **A log line when `getLinkOptions` hits its 5,000-row cap**, once per doctype, so a truncated list is no longer silent.
 - **`cannot_add_rows` and `cannot_delete_rows` on Table fields, as Frappe Desk honours them.**
   - `DocField` now models both flags (`cannotAddRows`, `cannotDeleteRows`). They are parsed, serialised and carried through the form's effective-props copy.
@@ -62,6 +77,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`getLinkOptionsOffline(query:)` ignored the text on a doctype with no title field, and matched only the title on the others.**
+  - With no `title_field`, the unfiltered list came back. With one, a docname or a `search_fields` value never matched.
+  - The query now matches `LIKE %text%` against the docname (`server_name`, or `mobile_uuid` for a row not pushed yet), the title field and `search_fields`, ORed, as the server search does.
+  - On a doctype with a title field, the results are a superset of the previous title-only matches.
 - **A saved Rating showed no stars, and a tap on a star was undone.**
   - Frappe stores a Rating as the fraction `stars ÷ max`: 3 of 5 is `0.6` (`controls/rating.js`). `RatingField` already reads and writes that fraction, but `FieldNormalizer` parsed a Rating as an `int`, and `int.tryParse('0.6')` is `null`. So every stored fraction normalized to `null` and the form's post-frame patch cleared the stars.
   - In reactive mode, a saved rating opened with no stars. In both modes, a tap was undone by the next patch.
