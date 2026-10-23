@@ -236,12 +236,11 @@ void main() {
   testWidgets(
     'a failing reclaim of the replaced file does not lose the new pick',
     (tester) async {
-      // BUG SDK2-11 (P3), AttachField twin of the ImageField finding:
-      // attach_field.dart:428 awaits `reclaimAttachment(current)` BEFORE
-      // `fieldState.didChange(stored)` / `onChanged` in the pick handler, so a
-      // throwing reclaimer drops the freshly staged file and the catch-all
-      // tells the user to check "connection and storage permissions". The
-      // Remove button in the same file clears first for exactly this reason.
+      // AttachField twin of the ImageField case: a throwing reclaimer must not
+      // drop the freshly staged file or show the "connection and storage
+      // permissions" message. The new file is committed before the old one is
+      // reclaimed. (Was BUG SDK2-11 until the pick committed first and caught
+      // the reclaim.)
       final changes = <String?>[];
       await pump(
         tester,
@@ -261,7 +260,15 @@ void main() {
             ),
       );
       expect(changes, hasLength(1));
+      await settle(tester, () => false);
+      expect(
+        shown(
+          'Could not attach the file. '
+          'Check your connection and storage permissions.',
+        ),
+        isFalse,
+        reason: 'the file is attached, so a reclaim failure is not reported',
+      );
     },
-    skip: true, // BUG SDK2-11: reclaim failure drops the new pick
   );
 }

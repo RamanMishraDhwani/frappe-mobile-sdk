@@ -409,11 +409,26 @@ class AttachField extends BaseField {
                                 uploadFile: uploadFile,
                               );
                               if (stored != null && stored.isNotEmpty) {
-                                // Reclaim the file this pick replaces.
+                                // The form hears of the file first. The field
+                                // can be disposed while the upload runs (its
+                                // tab page went off screen), and then onChanged
+                                // is the only way the form can: `didChange` on
+                                // a disposed state throws, and it used to run
+                                // first, so the file was dropped.
+                                onChanged?.call(stored);
+                                if (fieldState.mounted) {
+                                  fieldState.didChange(stored);
+                                }
+                                // Reclaim the file this pick replaces, only
+                                // now that the new value is committed: run
+                                // first, a pick that then failed to land had
+                                // already deleted the staged file it replaced.
                                 // Guarded by isStagedPath, so a host path or a
                                 // pending: marker is untouched — and by the
                                 // queue when the host wired a database-backed
-                                // reclaim.
+                                // reclaim. A failure leaves an orphan for the
+                                // sweep; it must not report the file, which is
+                                // attached, as failed.
                                 //
                                 // `current`, NOT `fieldState.value`: before the
                                 // first interaction the form-field value is
@@ -425,9 +440,14 @@ class AttachField extends BaseField {
                                 // hasInteractedByUser-aware value the discard
                                 // path already uses — the two paths disagreeing
                                 // about which value is live is the bug.
-                                await reclaimAttachment(current);
-                                fieldState.didChange(stored);
-                                onChanged?.call(stored);
+                                try {
+                                  await reclaimAttachment(current);
+                                } catch (e, st) {
+                                  sdkLog(
+                                    'AttachField: reclaim of $current failed '
+                                    '— $e\n$st',
+                                  );
+                                }
                                 return;
                               }
                               // Only reachable if the durable copy itself

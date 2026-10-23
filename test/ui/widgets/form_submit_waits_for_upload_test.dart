@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:frappe_mobile_sdk/frappe_mobile_sdk.dart';
+import 'package:frappe_mobile_sdk/src/ui/widgets/fields/image_field.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -267,6 +268,85 @@ void main() {
           f.submits,
           hasLength(1),
           reason: 'the form must not hang on a photo that failed',
+        );
+      });
+
+      // TabBarView disposes a tab page once it is off screen, and no field
+      // keeps itself alive, so the photo field is gone when its upload lands.
+      testWidgets('a photo whose tab was left while it uploads is still saved', (
+        tester,
+      ) async {
+        final upload = Completer<String?>();
+        final submits = <Map<String, dynamic>>[];
+        var started = false;
+        late void Function() submit;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: FrappeFormBuilder(
+                meta: DocTypeMeta(
+                  name: 'TestDoctype',
+                  fields: <DocField>[
+                    DocField(
+                      fieldname: 'tab_photos',
+                      fieldtype: 'Tab Break',
+                      label: 'Photos',
+                    ),
+                    DocField(
+                      fieldname: 'photo',
+                      fieldtype: 'Attach Image',
+                      label: 'Photo',
+                    ),
+                    DocField(
+                      fieldname: 'tab_notes',
+                      fieldtype: 'Tab Break',
+                      label: 'Notes',
+                    ),
+                    DocField(
+                      fieldname: 'note',
+                      fieldtype: 'Data',
+                      label: 'Note',
+                    ),
+                  ],
+                ),
+                mode: mode,
+                uploadFile: (_) {
+                  started = true;
+                  return upload.future;
+                },
+                onSubmit: submits.add,
+                registerSubmit: (fn) => submit = fn,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        await pickPhoto(tester, () => started);
+
+        await tester.tap(find.widgetWithText(Tab, 'Notes'));
+        await settle(tester);
+        expect(
+          find.byType(ImageField, skipOffstage: false),
+          findsNothing,
+          reason: 'the photo tab page was disposed while the photo uploads',
+        );
+
+        submit();
+        await settle(tester);
+        expect(submits, isEmpty, reason: 'the upload has not finished yet');
+
+        upload.complete('/private/files/photo.jpg');
+        await settleUntil(tester, () => submits.isNotEmpty);
+
+        expect(submits, hasLength(1), reason: 'saved once the photo landed');
+        expect(submits.single['photo'], '/private/files/photo.jpg');
+        expect(
+          find.text(
+            'Could not open the gallery. Check photo permissions in Settings.',
+          ),
+          findsNothing,
+          reason: 'landing on a disposed field must not fail the pick',
         );
       });
 

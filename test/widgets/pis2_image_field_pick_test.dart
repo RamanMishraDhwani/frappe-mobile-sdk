@@ -252,9 +252,7 @@ void main() {
     expect(find.text(msg), findsOneWidget);
   });
 
-  testWidgets('replacing a photo reclaims the previous value first', (
-    tester,
-  ) async {
+  testWidgets('replacing a photo reclaims the previous value', (tester) async {
     final changes = <String?>[];
     final reclaimed = <String?>[];
     await pump(
@@ -359,12 +357,10 @@ void main() {
   testWidgets(
     'a failing reclaim of the replaced photo does not lose the new pick',
     (tester) async {
-      // BUG SDK2-11 (P3): image_field.dart:297 awaits reclaimAttachment BEFORE
-      // didChange/onChanged (:298-299), so a reclaimer that throws aborts the
-      // pick: the new photo is staged but never attached, and the gallery
-      // catch (:589-600) tells the user to check PHOTO PERMISSIONS. The same
-      // file's Remove path documents the opposite rule (:699-703, "the user's
-      // action must take effect even if reclaiming the bytes fails").
+      // A reclaimer that throws must not abort the pick or send the user to
+      // check photo permissions: the new photo is committed before the old
+      // one is reclaimed, and a reclaim failure only leaves an orphan. (Was
+      // BUG SDK2-11 until the pick committed first and caught the reclaim.)
       final changes = <String?>[];
       await tester.pumpWidget(
         MaterialApp(
@@ -387,6 +383,5 @@ void main() {
       expect(changes, hasLength(1));
       expect(find.textContaining('photo permissions'), findsNothing);
     },
-    skip: true, // BUG SDK2-11: reclaim failure drops the new pick
   );
 }

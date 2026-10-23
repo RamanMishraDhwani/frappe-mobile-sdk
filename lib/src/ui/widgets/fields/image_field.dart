@@ -283,6 +283,10 @@ class ImageField extends BaseField {
     File file, {
     ScaffoldMessengerState? messenger,
   }) async {
+    // Read before the first await, while the field is in the tree. Its tab page
+    // can be disposed while the photo uploads (TabBarView drops off-screen
+    // tabs), and a disposed field state can no longer be read.
+    final replacedAtPick = _replacedValue(fieldState);
     // Opt-in size limit (ImageUploadSettings.captureLimits); a no-op unless the
     // host app turned it on. Runs before the durable copy, so the smaller file
     // is what gets staged and uploaded, online or offline.
@@ -325,26 +329,24 @@ class ImageField extends BaseField {
       return false;
     }
     if (stored != null && stored.isNotEmpty) {
-      // Reclaim the file this pick replaces (guarded by isStagedPath, and by
-      // the queue when the host wired a database-backed reclaim).
-      //
-      // This mirrors `buildField`'s `currentValue` rather than reading
-      // `fieldState.value` raw. Before the first interaction the form-field
-      // value is still null while the WIDGET value holds what a document load
-      // supplied, so the raw read reclaimed nothing and the staged file this
-      // pick replaced leaked until the orphan sweep found it. The discard path
-      // already uses the precedence-aware value; the two disagreeing is the bug.
-      // `buildField`'s local is not in scope here, so the expression is
-      // repeated — including the trim, because `isStagedPath` canonicalises
-      // whatever it is handed and an untrimmed path is a different string.
-      final replaced = liveAttachmentValue(
-        hasInteractedByUser: fieldState.hasInteractedByUser,
-        fieldValue: fieldState.value,
-        widgetValue: value,
-      );
-      await reclaimAttachment(replaced);
-      fieldState.didChange(stored);
+      final replaced = fieldState.mounted
+          ? _replacedValue(fieldState)
+          : replacedAtPick;
+      // The form hears of the photo first. When the field is gone, onChanged is
+      // the only way it can: `didChange` on a disposed state throws, and it
+      // used to run first, so the record was saved without the photo.
       onChanged?.call(stored);
+      if (fieldState.mounted) fieldState.didChange(stored);
+      // Reclaim only after the new value is committed. Run first, a pick that
+      // then failed to land had already deleted the staged file it replaced.
+      // Guarded by isStagedPath, and by the queue when the host wired a
+      // database-backed reclaim. A failure here leaves an orphan for the sweep;
+      // it must not report the photo, which is attached, as failed.
+      try {
+        await reclaimAttachment(replaced);
+      } catch (e, st) {
+        sdkLog('ImageField: reclaim of $replaced failed — $e\n$st');
+      }
       return true;
     }
     // Only reachable when the durable copy itself yielded nothing, so there is
@@ -355,6 +357,27 @@ class ImageField extends BaseField {
       _notify(messenger, 'Upload failed — the photo was not attached.');
     }
     return false;
+  }
+
+  /// The value a pick replaces, or null when [fieldState] is no longer in the
+  /// tree (a disposed state cannot be read).
+  ///
+  /// This mirrors `buildField`'s `currentValue` rather than reading
+  /// `fieldState.value` raw. Before the first interaction the form-field value
+  /// is still null while the WIDGET value holds what a document load supplied,
+  /// so the raw read reclaimed nothing and the staged file this pick replaced
+  /// leaked until the orphan sweep found it. The discard path already uses the
+  /// precedence-aware value; the two disagreeing is the bug. `buildField`'s
+  /// local is not in scope here, so the expression is repeated — including the
+  /// trim, because `isStagedPath` canonicalises whatever it is handed and an
+  /// untrimmed path is a different string.
+  String? _replacedValue(FormFieldState<String> fieldState) {
+    if (!fieldState.mounted) return null;
+    return liveAttachmentValue(
+      hasInteractedByUser: fieldState.hasInteractedByUser,
+      fieldValue: fieldState.value,
+      widgetValue: value,
+    );
   }
 
   /// Handle to the capture marker, or null when the cache dir is unavailable
