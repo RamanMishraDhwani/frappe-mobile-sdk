@@ -47,7 +47,7 @@ class LinkRemoteSearch {
 
   /// Whether [text] needs no server search: the first page held every match
   /// ([complete]), or [text] equals an option's docname. A LABEL match does
-  /// not count: labels repeat (two villages named Rampur), and the other one
+  /// not count: labels repeat (two records can share a title), and the other one
   /// may be past the first page.
   static bool resolvesLocally(
     List<LinkOptionEntity> options,
