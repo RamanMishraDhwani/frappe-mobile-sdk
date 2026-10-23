@@ -402,6 +402,36 @@ void main() {
       await svc.searchLinkOptions('Product Code', txt: '', pageLength: 10);
       expect(server.seen, hasLength(2));
     });
+
+    test('a finished sync drops the cached first pages when the sync stream '
+        'is single-subscription', () async {
+      final sync = StreamController<void>();
+      // Not awaited: a single-subscription stream nobody listens to never
+      // completes its close.
+      addTearDown(() => unawaited(sync.close()));
+      final svc = service(syncComplete: sync.stream);
+      await svc.searchLinkOptions('Product Code', txt: '', pageLength: 10);
+      sync.add(null);
+      await Future<void>.delayed(Duration.zero);
+      await svc.searchLinkOptions('Product Code', txt: '', pageLength: 10);
+      expect(server.seen, hasLength(2));
+    });
+
+    test('a single-subscription sync stream still reaches every picker that '
+        'listens to syncComplete\$', () async {
+      final sync = StreamController<void>();
+      addTearDown(() => unawaited(sync.close()));
+      final svc = service(syncComplete: sync.stream);
+      var first = 0;
+      var second = 0;
+      final a = svc.syncComplete$!.listen((_) => first++);
+      final b = svc.syncComplete$!.listen((_) => second++);
+      addTearDown(a.cancel);
+      addTearDown(b.cancel);
+      sync.add(null);
+      await Future<void>.delayed(Duration.zero);
+      expect([first, second], [1, 1]);
+    });
   });
 
   group('offline mode switched on: searches the device', () {

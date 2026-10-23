@@ -37,6 +37,10 @@ class LinkOptionService {
   /// [FrappeSDK.syncComplete$]. Pickers and the [LinkFieldCoordinator]
   /// listen to this to invalidate stale empty caches and re-fetch
   /// options for fields whose target doctype just got fresh data.
+  ///
+  /// A broadcast stream, or null: a single-subscription stream passed to the
+  /// constructor is shared through [Stream.asBroadcastStream], which takes
+  /// its one subscription when the service is built.
   Stream<void>? get syncComplete$ => _syncCompleteStream;
 
   /// Primary constructor — inject a wired [UnifiedResolver].
@@ -48,18 +52,17 @@ class LinkOptionService {
     LinkSearchPolicy searchPolicy = const LinkSearchPolicy(),
   }) : _resolver = resolver,
        _metaResolver = metaResolver,
-       _syncCompleteStream = syncComplete$,
+       // This service and every picker listen; a single-subscription stream
+       // takes one listener, so it is shared as a broadcast stream.
+       _syncCompleteStream = syncComplete$ == null || syncComplete$.isBroadcast
+           ? syncComplete$
+           : syncComplete$.asBroadcastStream(),
        _translate = translate,
        _searchPolicy = searchPolicy {
     // A finished sync can change any target, so cached first pages go. This
     // listener is added before any picker exists, so it runs before a picker's
-    // own sync-complete reload asks for a first page again. Only a broadcast
-    // stream is listened to: a single-subscription one can have one listener,
-    // and the pickers listen to it.
-    final stream = syncComplete$;
-    if (stream != null && stream.isBroadcast) {
-      stream.listen((_) => _forgetFirstPages());
-    }
+    // own sync-complete reload asks for a first page again.
+    _syncCompleteStream?.listen((_) => _forgetFirstPages());
   }
 
   /// Converts Frappe-shaped filter rows to the 3-tuple `[field, op, value]`
