@@ -21,7 +21,8 @@ class LinkSearchPolicy {
     this.debounce = const Duration(milliseconds: 500),
     this.pageLength = 20,
     this.prefetchOnlyDoctypes = const {},
-  });
+  }) : assert(prefetchSize >= 2, 'prefetchSize must be at least 2'),
+       assert(pageLength >= 1, 'pageLength must be at least 1');
 
   /// A policy that keeps the full prefetch for every picker.
   static const LinkSearchPolicy disabled = LinkSearchPolicy(enabled: false);
@@ -31,6 +32,10 @@ class LinkSearchPolicy {
 
   /// Options loaded when a picker opens. Fewer rows than this means the picker
   /// already holds every match, so typing never reaches the server.
+  ///
+  /// At least 2. A single matching option is auto-selected only when the page
+  /// holds every match, and with a page of 1 a lone row cannot be told apart
+  /// from the first of many.
   final int prefetchSize;
 
   /// No server search below this many typed characters.
@@ -39,7 +44,8 @@ class LinkSearchPolicy {
   /// Wait after the last keystroke before searching. 500 ms is Desk's.
   final Duration debounce;
 
-  /// Rows returned by one server search.
+  /// Rows returned by one server search. At least 1: Frappe reads
+  /// `limit_page_length=0` as "no limit" and would return the whole doctype.
   final int pageLength;
 
   /// Target doctypes that keep the full prefetch even when [enabled].
