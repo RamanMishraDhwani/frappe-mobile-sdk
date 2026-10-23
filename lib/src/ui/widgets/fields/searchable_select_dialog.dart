@@ -63,13 +63,11 @@ class _SearchableSelectDialogState extends State<SearchableSelectDialog> {
     super.dispose();
   }
 
-  bool _resolvesLocally(String text) {
-    if (widget.optionsComplete) return true;
-    final t = text.trim().toLowerCase();
-    return widget.options.any(
-      (o) => o.name.toLowerCase() == t || (o.label ?? '').toLowerCase() == t,
-    );
-  }
+  bool _resolvesLocally(String text) => LinkRemoteSearch.resolvesLocally(
+    widget.options,
+    text,
+    complete: widget.optionsComplete,
+  );
 
   void _toggleSelection(LinkOptionEntity option) {
     final value = option.name;
@@ -79,6 +77,9 @@ class _SearchableSelectDialogState extends State<SearchableSelectDialog> {
           _selected.remove(value);
         } else {
           _selected.add(value);
+          // A row from the server search is not in [options]: report it so
+          // the caller can keep its label once the dialog closes.
+          widget.onPickOption?.call(option);
         }
       } else {
         _selected = [value];
@@ -90,17 +91,17 @@ class _SearchableSelectDialogState extends State<SearchableSelectDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final remote = _remote?.resultsFor(_searchQuery);
-    final filteredOptions =
-        remote ??
-        widget.options.where((option) {
-          if (_searchQuery.isEmpty) return true;
-          final labelLower = (option.label ?? option.name).toLowerCase();
-          final nameLower = option.name.toLowerCase();
-          final queryLower = _searchQuery.toLowerCase();
-          return labelLower.contains(queryLower) ||
-              nameLower.contains(queryLower);
-        }).toList();
+    final filteredOptions = LinkRemoteSearch.merge(
+      widget.options.where((option) {
+        if (_searchQuery.isEmpty) return true;
+        final labelLower = (option.label ?? option.name).toLowerCase();
+        final nameLower = option.name.toLowerCase();
+        final queryLower = _searchQuery.toLowerCase();
+        return labelLower.contains(queryLower) ||
+            nameLower.contains(queryLower);
+      }).toList(),
+      _remote?.resultsFor(_searchQuery),
+    );
     final searching = _remote?.searching ?? false;
     final error = _remote?.error;
 

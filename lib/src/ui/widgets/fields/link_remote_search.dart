@@ -45,6 +45,34 @@ class LinkRemoteSearch {
   /// The last search failed; cleared by the next [update] or [retry].
   Object? error;
 
+  /// Whether [text] needs no server search: the first page held every match
+  /// ([complete]), or [text] equals an option's docname. A LABEL match does
+  /// not count: labels repeat (two villages named Rampur), and the other one
+  /// may be past the first page.
+  static bool resolvesLocally(
+    List<LinkOptionEntity> options,
+    String text, {
+    required bool complete,
+  }) {
+    if (complete) return true;
+    final t = text.trim().toLowerCase();
+    if (t.isEmpty) return true;
+    return options.any((o) => o.name.toLowerCase() == t);
+  }
+
+  /// The rows to show: the server's rows first (in its relevance order, and
+  /// they reach past the first page), then the local matches it did not
+  /// return. Those can carry labels the server does not match on (a fallback
+  /// label column, a host relabel), so a server reply never hides them.
+  static List<LinkOptionEntity> merge(
+    List<LinkOptionEntity> local,
+    List<LinkOptionEntity>? remote,
+  ) {
+    if (remote == null) return local;
+    final seen = <String>{for (final o in remote) o.name};
+    return [...remote, ...local.where((o) => seen.add(o.name))];
+  }
+
   /// The server's rows for [text], or null when there are none for it (yet).
   List<LinkOptionEntity>? resultsFor(String text) =>
       _term != null && _term == text.trim() ? _results : null;
@@ -98,7 +126,8 @@ class LinkRemoteSearch {
     }
   }
 
-  /// Forgets every cached term, e.g. when the picker's filters change.
+  /// Forgets every cached term and any reply in flight, e.g. when the
+  /// picker's filters change: rows found under the old filters are wrong now.
   void reset() {
     _timer?.cancel();
     _seq++;

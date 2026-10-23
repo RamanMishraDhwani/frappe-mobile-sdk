@@ -16,8 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - filters them as the user types;
     - when the text does not resolve among them, asks the server 500 ms after the last keystroke.
   - The search matches `LIKE %text%` against `name`, the title field and `search_fields`, which is what Desk's Link control matches. It goes through the same `frappe.client.get_list` path as the prefetch, so labels are built as before.
-  - The text resolves locally when the first page held every match (fewer than 10 rows) or when it equals an option's name or label. A partial match does not stop the search, because the wanted row can be past the first page.
-  - A target with fewer than 10 matching rows behaves exactly as before, including the auto-select of a single option.
+  - The text resolves locally only when the first page held every match (fewer than 10 rows) or when it equals an option's docname.
+    - A label match does not stop the search, because labels repeat and a namesake can be past the first page.
+    - A partial match does not stop it either.
+  - Server rows come first, followed by any local matches the server did not return, so a reply never hides a row the user just saw. The inline picker now also matches docnames, as the dialog already did.
+  - A target with fewer than 10 matching rows behaves exactly as before, including the auto-select of a single option and the "No options available" + Refresh state for zero rows.
+  - Pickers on the same target and filters share one first-page request, reused for 30 seconds. The form-load prefetch skips server-searched targets.
+  - Only the newest load of a picker applies its result.
+  - A value set after the first page loaded gets its title.
+  - If offline mode is switched on while a picker is open, it searches the device.
+  - A translated doctype keeps the full in-memory list.
   - Offline-first reads are unchanged.
 - **Migration.** Opt out with `FrappeSDK(linkSearchPolicy: LinkSearchPolicy.disabled)`, or per doctype with `LinkSearchPolicy(prefetchOnlyDoctypes: {...})`.
   - A `LinkOptionService` subclass built on `withoutResolver()` keeps the full prefetch unless it forwards `usesServerSearch`, `searchPolicy` and `searchLinkOptions`.

@@ -294,8 +294,56 @@ class LinkOptionService {
     final resolver = _resolver;
     final metaResolver = _metaResolver;
     if (resolver == null || metaResolver == null) return const [];
-    final meta = await metaResolver(doctype);
     final q = txt.trim();
+
+    // Offline mode switched on while a picker was open: a server-shaped query
+    // would fail against the local mirror, so search what is on the device.
+    if (resolver.offlineMode.enabled) {
+      return getLinkOptionsOffline(
+        doctype: doctype,
+        filters: filters,
+        query: q.isEmpty ? null : q,
+        pageSize: pageLength,
+      );
+    }
+
+    if (q.isNotEmpty) {
+      return _searchServer(doctype, q, pageLength, filters);
+    }
+    // The first page: every picker on the same target with the same filters
+    // shares one request, and a remount within [_firstPageTtl] reuses it.
+    final key = '$doctype|$pageLength|${filters ?? const []}';
+    final cached = _firstPages[key];
+    if (cached != null &&
+        DateTime.now().difference(cached.at) < _firstPageTtl) {
+      return cached.options;
+    }
+    return _firstPageInFlight[key] ??=
+        _searchServer(doctype, q, pageLength, filters)
+            .then((options) {
+              _firstPages[key] = _FirstPage(options, DateTime.now());
+              return options;
+            })
+            .whenComplete(() {
+              // A block body on purpose: `=> remove(key)` returns the very
+              // future being completed, and whenComplete would wait on itself.
+              _firstPageInFlight.remove(key);
+            });
+  }
+
+  static const Duration _firstPageTtl = Duration(seconds: 30);
+  final Map<String, _FirstPage> _firstPages = <String, _FirstPage>{};
+  final Map<String, Future<List<LinkOptionEntity>>> _firstPageInFlight =
+      <String, Future<List<LinkOptionEntity>>>{};
+
+  Future<List<LinkOptionEntity>> _searchServer(
+    String doctype,
+    String q,
+    int pageLength,
+    List<List<dynamic>>? filters,
+  ) async {
+    final resolver = _resolver!;
+    final meta = await _metaResolver!(doctype);
     final lower = q.toLowerCase();
 
     if (meta.translatedDoctype) {
@@ -679,4 +727,11 @@ class LinkOptionService {
       translateLabels: meta.translatedDoctype,
     );
   }
+}
+
+/// A first page fetched by [LinkOptionService.searchLinkOptions], and when.
+class _FirstPage {
+  _FirstPage(this.options, this.at);
+  final List<LinkOptionEntity> options;
+  final DateTime at;
 }

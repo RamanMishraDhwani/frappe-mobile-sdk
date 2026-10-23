@@ -14,7 +14,7 @@ LinkOptionEntity _opt(String name, [String? label]) => LinkOptionEntity(
 
 /// Ten first-page options; the wanted row is not among them.
 final List<LinkOptionEntity> _page = [
-  for (var i = 0; i < 10; i++) _opt('$i', 'SBIN000000$i'),
+  for (var i = 0; i < 10; i++) _opt('BI-0000$i', 'SBIN000000$i'),
 ];
 
 class _Search {
@@ -85,13 +85,77 @@ void main() {
     expect(search.calls, isEmpty);
   });
 
-  testWidgets('an exact match on the first page: no request', (tester) async {
+  testWidgets('an exact DOCNAME match on the first page: no request, and the '
+      'row is shown', (tester) async {
     final search = _Search();
     await _pump(tester, search: search);
-    await _type(tester, 'sbin0000003');
+    await _type(tester, 'bi-00003');
     await tester.pump(const Duration(seconds: 1));
     expect(search.calls, isEmpty);
     expect(find.text('SBIN0000003'), findsOneWidget);
+  });
+
+  testWidgets('an exact LABEL match still searches: labels repeat, and a '
+      'namesake can be past the first page', (tester) async {
+    final search = _Search();
+    await _pump(tester, search: search);
+    await _type(tester, 'sbin0000003');
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(search.calls, ['sbin0000003']);
+    search.pending['sbin0000003']!.complete([
+      _opt('BI-00003', 'SBIN0000003'),
+      _opt('BI-99003', 'SBIN0000003 (other branch)'),
+    ]);
+    await tester.pump();
+    expect(find.text('SBIN0000003'), findsOneWidget);
+    expect(find.text('SBIN0000003 (other branch)'), findsOneWidget);
+  });
+
+  testWidgets('an empty server reply never hides the local matches', (
+    tester,
+  ) async {
+    final search = _Search();
+    await _pump(tester, search: search);
+    await _type(tester, 'SBIN000000');
+    await tester.pump(const Duration(milliseconds: 500));
+    search.pending['SBIN000000']!.complete(const []);
+    await tester.pump();
+    expect(find.text('SBIN0000001'), findsOneWidget);
+    expect(find.text('No matching options'), findsNothing);
+  });
+
+  testWidgets('new filters (searchScope) drop the cached rows and search '
+      'again; a new options list alone keeps a reply in flight', (
+    tester,
+  ) async {
+    final search = _Search();
+    Widget build(Object scope, List<LinkOptionEntity> options) => MaterialApp(
+      home: Scaffold(
+        body: SearchableSelect(
+          options: options,
+          selected: const [],
+          onChanged: (_) {},
+          onSearch: search.call,
+          searchDebounce: const Duration(milliseconds: 500),
+          optionsComplete: false,
+          searchScope: scope,
+        ),
+      ),
+    );
+    await tester.pumpWidget(build('district=X', _page));
+    await _type(tester, 'ACME');
+    await tester.pump(const Duration(milliseconds: 500));
+    // Same filters, new list instance (e.g. a picked row was kept).
+    await tester.pumpWidget(build('district=X', [..._page]));
+    search.pending['ACME']!.complete([_opt('77', 'ACME0OLD')]);
+    await tester.pump();
+    expect(find.text('ACME0OLD'), findsOneWidget);
+    // Filters changed: the X rows are wrong now and the text is re-searched.
+    await tester.pumpWidget(build('district=Y', _page));
+    await tester.pump();
+    expect(find.text('ACME0OLD'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(search.calls, ['ACME', 'ACME']);
   });
 
   testWidgets('a complete first page: no request, and the old empty state', (
@@ -115,8 +179,9 @@ void main() {
     expect(search.calls, ['SBIN']);
     search.pending['SBIN']!.complete([_opt('77', 'SBIN0099999')]);
     await tester.pump();
+    // The server's row first; the local matches stay below it.
     expect(find.text('SBIN0099999'), findsOneWidget);
-    expect(find.text('SBIN0000001'), findsNothing);
+    expect(find.text('SBIN0000001'), findsOneWidget);
   });
 
   testWidgets('a slow reply to an older text never replaces a newer one', (
@@ -172,6 +237,44 @@ void main() {
     await tester.tap(find.text('ACME0WIDGET'));
     await tester.pump();
     expect(events, ['option:4205', 'changed:4205']);
+  });
+
+  testWidgets('dialog multi-select reports a row picked from the search, so '
+      'its chip keeps the label', (tester) async {
+    final search = _Search();
+    final picked = <String>[];
+    var selected = <String>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) => SearchableSelect(
+              options: _page,
+              selected: selected,
+              multiSelect: true,
+              pickerMode: LinkFieldPickerMode.dialog,
+              onChanged: (v) => setState(() => selected = v),
+              onSearch: search.call,
+              optionsComplete: false,
+              onPickOption: (o) => picked.add(o.name),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(InputDecorator));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'ACME0WID');
+    await tester.pump(const Duration(milliseconds: 500));
+    search.pending['ACME0WID']!.complete([_opt('4205', 'ACME0WIDGET')]);
+    await tester.pump();
+    await tester.tap(find.text('ACME0WIDGET'));
+    await tester.pump();
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect(picked, ['4205']);
+    expect(selected, ['4205']);
+    expect(find.text('ACME0WIDGET'), findsOneWidget); // the chip
   });
 
   testWidgets('no onSearch: behaves as before (in-memory only)', (

@@ -31,6 +31,7 @@ class SearchableSelect extends StatefulWidget {
     this.searchMinChars = 2,
     this.optionsComplete = true,
     this.onPickOption,
+    this.searchScope,
   });
 
   /// All available options (already loaded).
@@ -57,12 +58,12 @@ class SearchableSelect extends StatefulWidget {
 
   /// Server search for options beyond [options]. Called [searchDebounce] after
   /// the last keystroke, once the text has [searchMinChars] characters and
-  /// does not resolve locally; its rows replace the list for that text.
+  /// does not resolve locally; its rows are added after the local matches.
   ///
   /// The text resolves locally when [optionsComplete] is true, or when it
-  /// equals an option's name or label. A partial match does NOT stop the
-  /// search: [options] may be only the first page, and the row the user wants
-  /// can be past it.
+  /// equals an option's docname. A label or partial match does NOT stop the
+  /// search: [options] may be only the first page, labels repeat, and the row
+  /// the user wants can be past it.
   final Future<List<LinkOptionEntity>> Function(String text)? onSearch;
   final Duration searchDebounce;
   final int searchMinChars;
@@ -74,6 +75,11 @@ class SearchableSelect extends StatefulWidget {
   /// Called with the picked option before [onChanged], so a caller can keep an
   /// option that came from [onSearch] (it is not in [options]).
   final ValueChanged<LinkOptionEntity>? onPickOption;
+
+  /// What the [onSearch] results depend on besides the text, e.g. the
+  /// picker's filters. When it changes, cached and in-flight results are
+  /// dropped and the current text is searched again.
+  final Object? searchScope;
 
   @override
   State<SearchableSelect> createState() => _SearchableSelectState();
@@ -103,9 +109,12 @@ class _SearchableSelectState extends State<SearchableSelect> {
       _remote?.dispose();
       _remote = null;
       _syncRemote();
-    } else if (!identical(oldWidget.options, widget.options)) {
-      // A new first page (e.g. the filters changed): cached terms are stale.
+    } else if (oldWidget.searchScope != widget.searchScope) {
+      // Rows found under the old filters are wrong now: drop them and search
+      // the current text again. A new options list alone (a pick, a reload
+      // with the same filters) keeps the cache and any reply in flight.
       _remote?.reset();
+      _remote?.update(_search, resolvedLocally: _resolvesLocally(_search));
     }
   }
 
@@ -144,29 +153,38 @@ class _SearchableSelectState extends State<SearchableSelect> {
       _picked[name]?.label ??
       name;
 
-  bool _resolvesLocally(String text) {
-    if (widget.optionsComplete) return true;
-    final t = text.trim().toLowerCase();
-    return widget.options.any(
-      (o) => o.name.toLowerCase() == t || (o.label ?? '').toLowerCase() == t,
-    );
-  }
+  bool _resolvesLocally(String text) => LinkRemoteSearch.resolvesLocally(
+    widget.options,
+    text,
+    complete: widget.optionsComplete,
+  );
 
   List<LinkOptionEntity> get _filtered {
-    final remote = _remote?.resultsFor(_search);
-    final source =
-        remote ??
-        widget.options.where(
+    final q = _search.toLowerCase();
+    // Label or docname, as the dialog matches: a docname typed in full counts
+    // as resolved locally, so its row has to be on screen.
+    final local = widget.options
+        .where(
           (o) =>
-              _search.isEmpty ||
-              (o.label ?? o.name).toLowerCase().contains(_search.toLowerCase()),
-        );
-    return source.where((o) => !widget.selected.contains(o.name)).toList();
+              q.isEmpty ||
+              (o.label ?? o.name).toLowerCase().contains(q) ||
+              o.name.toLowerCase().contains(q),
+        )
+        .toList();
+    final merged = LinkRemoteSearch.merge(local, _remote?.resultsFor(_search));
+    return merged.where((o) => !widget.selected.contains(o.name)).toList();
   }
 
   void _onSearchChanged(String text) {
-    setState(() => _search = text);
-    _remote?.update(text, resolvedLocally: _resolvesLocally(text));
+    final remote = _remote;
+    if (remote == null) {
+      setState(() => _search = text);
+      return;
+    }
+    // update() always reports through onUpdate (one setState), so setting the
+    // text here without a setState of its own avoids a second rebuild.
+    _search = text;
+    remote.update(text, resolvedLocally: _resolvesLocally(text));
   }
 
   void _pick(LinkOptionEntity option) {

@@ -116,14 +116,50 @@ void main() {
     expect(find.text('4205'), findsNothing);
   });
 
-  testWidgets('an empty first page still offers a search box', (tester) async {
+  testWidgets('an empty first page (nothing matches the filters) shows the '
+      'same empty state as before, Refresh included', (tester) async {
     final svc = _ServerSearchService(firstPage: const []);
     await tester.pumpWidget(
       _wrap(LinkField(field: _field(), linkOptionService: svc)),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(TextField), findsOneWidget);
-    expect(find.text('No options available'), findsNothing);
+    expect(find.text('No options available'), findsWidgets);
+    expect(find.byIcon(Icons.refresh), findsOneWidget);
+  });
+
+  testWidgets('a whole list returned for the first page (translated doctype) '
+      'is filtered in memory, never searched', (tester) async {
+    final svc = _ServerSearchService(
+      firstPage: [for (var i = 0; i < 15; i++) _opt('T$i', 'Month $i')],
+    );
+    await tester.pumpWidget(
+      _wrap(LinkField(field: _field(), linkOptionService: svc)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(TextField));
+    await tester.enterText(find.byType(TextField), 'Month 14');
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pumpAndSettle();
+    expect(svc.searches, ['']);
+    expect(find.text('Month 14'), findsWidgets);
+  });
+
+  testWidgets('a value set AFTER the first page loaded, past that page, '
+      'shows its title', (tester) async {
+    final svc = _ServerSearchService(firstPage: _tenRows)
+      ..titles['4205'] = 'ACME0WIDGET';
+    await tester.pumpWidget(
+      _wrap(LinkField(field: _field(), linkOptionService: svc)),
+    );
+    await tester.pumpAndSettle();
+    // How a client script / fetch_from sets it: through the form's field state.
+    tester
+        .state<FormBuilderState>(find.byType(FormBuilder))
+        .fields['product_code']!
+        .didChange('4205');
+    await tester.pumpAndSettle();
+    expect(find.text('ACME0WIDGET'), findsOneWidget);
+    expect(find.text('4205'), findsNothing);
   });
 
   testWidgets('a single-row first page (complete) still auto-selects', (

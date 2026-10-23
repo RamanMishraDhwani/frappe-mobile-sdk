@@ -170,6 +170,50 @@ void main() {
     });
   });
 
+  group('first page', () {
+    test('concurrent pickers on the same target share one request, and a '
+        'remount within the TTL reuses it', () async {
+      final svc = service();
+      await Future.wait([
+        svc.searchLinkOptions('Product Code', txt: '', pageLength: 10),
+        svc.searchLinkOptions('Product Code', txt: '', pageLength: 10),
+      ]);
+      await svc.searchLinkOptions('Product Code', txt: '', pageLength: 10);
+      expect(server.seen, hasLength(1));
+    });
+
+    test('different filters are different first pages', () async {
+      final svc = service();
+      await svc.searchLinkOptions('Product Code', txt: '', pageLength: 10);
+      await svc.searchLinkOptions(
+        'Product Code',
+        txt: '',
+        pageLength: 10,
+        filters: [
+          ['Product Code', 'is_active', '=', 1],
+        ],
+      );
+      expect(server.seen, hasLength(2));
+    });
+
+    test('typed searches are never cached', () async {
+      final svc = service();
+      await svc.searchLinkOptions('Product Code', txt: 'ACME', pageLength: 20);
+      await svc.searchLinkOptions('Product Code', txt: 'ACME', pageLength: 20);
+      expect(server.seen, hasLength(2));
+    });
+  });
+
+  test('offline mode switched on: never sends a server-shaped query', () async {
+    final svc = service(offline: true);
+    try {
+      await svc.searchLinkOptions('Product Code', txt: 'ACME', pageLength: 20);
+    } catch (_) {
+      // No local table in this harness; what matters is the server path.
+    }
+    expect(server.seen, isEmpty);
+  });
+
   test('searchColumnsFor keeps name, then real searchable fields once', () {
     expect(LinkOptionService.searchColumnsFor(_codeMeta('Product Code')), [
       'name',
