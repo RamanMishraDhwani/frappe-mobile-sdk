@@ -9,6 +9,7 @@ import '../../utils/depends_on_evaluator.dart';
 import '../../utils/doc_identity.dart';
 import '../../utils/field_defaults.dart';
 import '../../utils/frappe_save_value.dart';
+import '../../utils/translate.dart';
 import 'dependency_graph.dart';
 import 'field_ui_state.dart';
 import 'form_validators.dart';
@@ -583,7 +584,8 @@ class FormController extends ChangeNotifier {
     return e == null;
   }
 
-  /// Priority per field (first non-null wins): reqd -> sync field validators.
+  /// Priority per field (first non-null wins): reqd -> server rules
+  /// (non_negative, Data options) -> sync field validators.
   /// Async runs only in validateAsync(); cross-field runs in validate().
   String? _validateField(String field) {
     final f = _meta.fields.firstWhere(
@@ -608,6 +610,13 @@ class FormController extends ChangeNotifier {
         (v is! List && v is! String && v.toString().isEmpty);
     if ((f.reqd || ui.required) && missing) {
       return '${f.label ?? field} is required';
+    }
+    // Frappe `non_negative` (`Document._validate_non_negative`): same rule and
+    // wording as the legacy FrappeFormBuilder submit sweep. Reactive submit
+    // never runs the field widgets' validators, so without this a negative
+    // value saves locally and is only rejected by the server at sync time.
+    if (f.rejectsAsNegative(v)) {
+      return sdkTr('Value cannot be negative for {0}', [f.displayLabel]);
     }
     // Data with options Email / Phone / Name / URL: the server's checks.
     if (f.fieldtype == 'Data' && v is String) {
