@@ -26,16 +26,18 @@ import 'frappe_reserved_fields.dart';
 /// field gated on a switch that is off is shown until the user flips it.
 ///
 /// [newDocument]: Desk applies `set_default_values` to a NEW document only.
-/// On a saved document whose Select is unset (Frappe omits null fields from
-/// the document it returns), starting it on its first option would write that
-/// option on the next save. The first-option rule therefore applies only when
-/// [newDocument] is true; an explicit `default` is unaffected.
+/// Frappe omits null fields from a saved document it returns, so a saved
+/// record's empty field (or one the user has just cleared) has no value here;
+/// giving it its default would write the current user, the current time, the
+/// literal default or a Select's first option on the next save. When
+/// [newDocument] is false this therefore returns null for every field.
 Object? typedDefaultValue(
   DocField field, {
   SessionUser? user,
   DateTime Function()? now,
   bool newDocument = true,
 }) {
+  if (!newDocument) return null;
   final raw = field.defaultValue;
   if (raw != null && raw.isNotEmpty) {
     final token = raw.toLowerCase();
@@ -63,7 +65,7 @@ Object? typedDefaultValue(
       return (raw == null || raw.isEmpty) ? null : _flt(raw);
     case 'Select':
       if (raw != null && raw.isNotEmpty) return raw;
-      return newDocument ? _firstSelectOption(field) : null;
+      return _firstSelectOption(field);
     default:
       return raw;
   }

@@ -134,8 +134,10 @@ void main() {
     expect(isNewDocumentData(const {'mobile_uuid': 'u-1'}), isFalse);
   });
 
-  test('typedDefaultValue: an explicit default still applies to a saved '
-      'document; only the first-option rule is new-document only', () {
+  // Desk applies set_default_values to new documents only: an explicit default
+  // is not applied to a saved document either (saved_doc_defaults_test.dart).
+  test('typedDefaultValue: a saved document gets neither an explicit default '
+      'nor the first option', () {
     final withDefault = DocField(
       fieldname: 'phase',
       fieldtype: 'Select',
@@ -147,8 +149,9 @@ void main() {
       fieldtype: 'Select',
       options: 'New\nOld',
     );
-    expect(typedDefaultValue(withDefault, newDocument: false), 'Old');
+    expect(typedDefaultValue(withDefault, newDocument: false), isNull);
     expect(typedDefaultValue(noDefault, newDocument: false), isNull);
+    expect(typedDefaultValue(withDefault), 'Old');
     expect(typedDefaultValue(noDefault), 'New');
   });
 }

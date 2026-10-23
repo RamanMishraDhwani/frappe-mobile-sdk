@@ -74,8 +74,9 @@ class FormController extends ChangeNotifier {
   final bool _roundNumbersOnSave;
 
   /// The initial data is not a saved document ([isNewDocumentData]); only
-  /// then does a Select with no default start on its first option.
-  final bool _newDocument;
+  /// then are fields given their defaults ([typedDefaultValue]). Recomputed
+  /// by [reset].
+  bool _newDocument;
   late DependencyGraph _graph;
 
   /// Parent document values, supplying `parent` to depends_on expressions on a
@@ -943,6 +944,9 @@ class FormController extends ChangeNotifier {
     for (final k in _uiNotifiers.keys.toList()) {
       if (!surviving.contains(k)) _uiNotifiers.remove(k)!.dispose();
     }
+    // New or saved is decided by the data being reset to, as in the
+    // constructor: reset to a saved document gives no defaults.
+    _newDocument = isNewDocumentData(initialData);
     _seedDefaults(initialData); // re-seed (overwrites surviving values)
     for (final e in _valueNotifiers.entries) {
       e.value.value = _rawValues[e.key];

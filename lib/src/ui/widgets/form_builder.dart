@@ -1265,11 +1265,16 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
 
   /// Returns a copy of [field] with the effective reqd/readOnly folded in.
   /// Shared by the legacy and reactive build paths.
+  ///
+  /// [keepDefault] false drops `default` from the copy, so a field widget
+  /// with no value does not fall back to showing (and validating) a default
+  /// the save will not send.
   DocField _withEffectiveProps(
     DocField field,
     bool effectiveReqd,
-    bool effectiveReadOnly,
-  ) {
+    bool effectiveReadOnly, {
+    bool keepDefault = true,
+  }) {
     return DocField(
       fieldname: field.fieldname,
       fieldtype: field.fieldtype,
@@ -1285,7 +1290,7 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
       linkFilters: field.linkFilters,
       fetchFrom: field.fetchFrom,
       section: field.section,
-      defaultValue: field.defaultValue,
+      defaultValue: keepDefault ? field.defaultValue : null,
       description: field.description,
       placeholder: field.placeholder,
       precision: field.precision,
@@ -1620,10 +1625,13 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
 
     final fieldStyle = _fieldStyleFor(field, effectiveReqd, formStyle);
 
+    // A saved document gets no defaults, so its field widgets must not show
+    // one either.
     final fieldWithEffectiveProps = _withEffectiveProps(
       field,
       effectiveReqd,
       effectiveReadOnly,
+      keepDefault: isNewDocumentData(widget.initialData),
     );
 
     final initialValue =
@@ -2444,8 +2452,9 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
   /// Gives every field the form has no value for its default, as Desk does
   /// for a new document (`frappe.model.set_default_values`): typed by field
   /// type ([typedDefaultValue]), `Today` on a Date resolved to today's date,
-  /// and hidden fields included. Runs on first build and again whenever the
-  /// form is reloaded with new data, so both start the same way.
+  /// and hidden fields included. A saved document gets no defaults
+  /// ([_defaultFor] is null). Runs on first build and again whenever the form
+  /// is reloaded with new data, so both start the same way.
   void _seedDefaults() {
     for (final field in widget.meta.fields) {
       final name = field.fieldname;
@@ -2455,7 +2464,8 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
   }
 
   /// [field]'s default for a new document: tokens resolved for
-  /// [FrappeFormBuilder.sessionUser], then typed ([typedDefaultValue]).
+  /// [FrappeFormBuilder.sessionUser], then typed ([typedDefaultValue]). Null
+  /// when [FrappeFormBuilder.initialData] is a saved document.
   Object? _defaultFor(DocField field) => typedDefaultValue(
     field,
     user: widget.sessionUser,
@@ -2698,10 +2708,15 @@ class _FrappeFormBuilderState extends State<FrappeFormBuilder>
         // Form-level readOnly (e.g. workflow freeze) must disable every field,
         // mirroring the legacy path (`_isFieldReadOnly(field) || widget.readOnly`).
         final effectiveReadOnly = ui.readOnly || widget.readOnly;
+        // The controller already holds every default a new document gets.
+        // A widget showing `default` for a null value (a saved document's
+        // empty field) would be patched back to empty after the first frame,
+        // and that patch would reach the controller as a user edit.
         final effective = _withEffectiveProps(
           field,
           ui.required,
           effectiveReadOnly,
+          keepDefault: false,
         );
         final fieldStyle = _fieldStyleFor(field, ui.required, formStyle);
         final value = c.getValue(name);

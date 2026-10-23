@@ -32,10 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `getLinkOptions` is unchanged and still returns up to 5,000 rows to direct callers.
   - A test double that `implements LinkOptionService` and does not stub `usesServerSearch` (a mocktail `Mock` returns null) keeps the prefetch path, because the picker treats an unanswerable service as "no server search". Stub it to `true` to exercise search.
 
-- **New-document defaults are typed as Desk types them, and a Select with no default starts on its first option, on NEW documents only.**
+- **Defaults apply to NEW documents only. They are typed as Desk types them, and a Select with no default starts on its first option.**
   - Defaults are cast as `set_default_values` casts them: Check/Int via `cint`, Float/Currency via `flt`. A Check default of `"0"` now starts as `0`, not as the truthy string `"0"`.
-  - Desk applies `set_default_values` to new documents only. A saved document whose Select is unset (Frappe omits null fields from the document it returns) is not given the first option, so the next save cannot write a value nobody chose.
-  - New: `isNewDocumentData` decides this from `name` / `server_name` / `mobile_uuid`; `typedDefaultValue` gains `newDocument`.
+  - Desk applies `set_default_values` to new documents only, and so does the SDK, for every default. A saved document's empty field (Frappe omits null fields from the document it returns) or a field the user clears is not given its `default`, a resolved `__user` / `now` token, or a Select's first option, so the next save cannot write a value nobody chose.
+  - New: `isNewDocumentData` decides this from `name` / `server_name` / `mobile_uuid`; `typedDefaultValue` gains `newDocument` (false gives null). `FormController.reset(initialData:)` decides it again from the data it is given.
 - **Saved numbers are NOT rounded to their precision unless the host opts in with `FrappeFormBuilder(roundNumbersOnSave: true)` (also on `FormController`). This is the 2.0.0-beta.4 behaviour.**
   - Desk rounds as the user types, so its scripts compute related values from the rounded figure. Rounding only at save, beside client-script values computed from the unrounded figure, made server checks refuse saves that beta.4 accepted.
     - `abs(new_qty - (current + adjusted)) > 1e-6` refused a 3-decimal quantity.
