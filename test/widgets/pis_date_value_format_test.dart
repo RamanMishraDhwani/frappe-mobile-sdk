@@ -61,7 +61,6 @@ void main() {
         reason: 'not an ISO datetime such as 2026-03-15T00:00:00.000',
       );
     },
-    skip: true, // BUG SDK-24
     // DateField emits DateTime.toIso8601String() ("...T00:00:00.000")
     // for a Date field, so device-picked dates never equal server dates
   );

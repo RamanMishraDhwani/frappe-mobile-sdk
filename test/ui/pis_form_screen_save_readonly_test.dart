@@ -281,7 +281,6 @@ void main() {
         );
         expect(find.text('No due date'), findsOneWidget);
       },
-      skip: true, // BUG SDK-25
       // the legacy submit fills "" for an untouched Date, the offline
       // save stores "", and reopening casts "" `as DateTime?` -> TypeError
     );

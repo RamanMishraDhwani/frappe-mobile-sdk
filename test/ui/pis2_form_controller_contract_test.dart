@@ -16,35 +16,29 @@ FormController _c(List<DocField> fields, {Map<String, dynamic>? data}) =>
 
 void main() {
   group('new-document defaults (frappe/model/create_new.py)', () {
-    test(
-      'a Select without a default starts on its FIRST option',
-      () {
-        // BUG SDK2-17 (P2, parity): form_controller.dart `_seedDefaults`
-        // (:174) seeds `f.defaultValue` (null) for a Select. Frappe gives a new
-        // document's Select its first option when no default is set —
-        // server: frappe/model/create_new.py:117-118
-        // (`return df.options.split("\n", 1)[0]`), desk:
-        // public/js/frappe/model/create_new.js:107-113. So on a new Task,
-        // `eval:doc.status=='Open'` is TRUE on desk and FALSE on mobile: the
-        // dependent field is hidden and stripped from the payload.
-        final c = _c([
-          DocField(
-            fieldname: 'status',
-            fieldtype: 'Select',
-            options: 'Open\nClosed',
-          ),
-          DocField(
-            fieldname: 'open_note',
-            fieldtype: 'Data',
-            dependsOn: "eval:doc.status=='Open'",
-          ),
-        ]);
-        addTearDown(c.dispose);
-        expect(c.getValue('status'), 'Open');
-        expect(c.uiStateOf('open_note').value.visible, isTrue);
-      },
-      skip: 'BUG SDK2-17: Select without default not seeded with option 1',
-    );
+    test('a Select without a default starts on its FIRST option', () {
+      // Frappe gives a new document's Select its first option when no
+      // default is set — server: frappe/model/create_new.py:117-118
+      // (`return df.options.split("\n", 1)[0]`), desk:
+      // public/js/frappe/model/create_new.js:107-113. So on a new Task,
+      // `eval:doc.status=='Open'` is TRUE and the dependent field shows.
+      // (Was BUG SDK2-17 until typedDefaultValue seeded the first option.)
+      final c = _c([
+        DocField(
+          fieldname: 'status',
+          fieldtype: 'Select',
+          options: 'Open\nClosed',
+        ),
+        DocField(
+          fieldname: 'open_note',
+          fieldtype: 'Data',
+          dependsOn: "eval:doc.status=='Open'",
+        ),
+      ]);
+      addTearDown(c.dispose);
+      expect(c.getValue('status'), 'Open');
+      expect(c.uiStateOf('open_note').value.visible, isTrue);
+    });
 
     test('a Select whose first option is blank starts empty', () {
       final c = _c([

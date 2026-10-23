@@ -512,7 +512,6 @@ void main() {
           reason: 'create_new.js: default "now" -> system_datetime()',
         );
       },
-      skip: true, // BUG SDK-18
       // only Date+"today" is resolved; a Datetime default "Now" is
       // seeded as the string "Now"
     );
@@ -545,7 +544,6 @@ void main() {
         final saved = await h.save(tester);
         expect(saved['due_on'], today());
       },
-      skip: true, // BUG SDK-19
       // didUpdateWidget re-seeds defaults without the "Today"
       // conversion (and skips hidden fields), unlike initState
     );
@@ -577,7 +575,6 @@ void main() {
         final saved = await h.save(tester);
         expect(saved['kind'], 'General');
       },
-      skip: true, // BUG SDK-19
       // didUpdateWidget re-seeds defaults only for non-hidden
       // fields, so a hidden default is dropped from the save
     );
@@ -625,7 +622,6 @@ void main() {
         final saved = await h.save(tester);
         expect(saved['subject'], 's');
       },
-      skip: true, // BUG SDK-25
       // a Date value of "" (the SDK's own submit fills "" for empty
       // non-Check fields) reaches FormBuilder.initialValue, and
       // FormBuilderDateTimePicker casts it `as DateTime?` -> TypeError, the

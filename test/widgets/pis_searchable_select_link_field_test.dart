@@ -153,7 +153,6 @@ void main() {
               'name; the inline picker matches only the label',
         );
       },
-      skip: true, // BUG SDK-20
       // inline SearchableSelect filters on label only, so an ID
       // typed by the operator finds nothing when the option has a title
     );
