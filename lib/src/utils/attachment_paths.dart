@@ -161,22 +161,22 @@ String? frappeFileFetchUrl(String? path, String? baseUrl) {
 ///
 /// Returns [headers] when [url] is relative or has the same scheme, host and
 /// port as [baseUrl]; null for any other origin. A protocol-relative URL
-/// (`//host/x`) is compared using the base's scheme. Without a [baseUrl] the origin
-/// cannot be checked, so [headers] pass through unchanged.
+/// (`//host/x`) is compared using the base's scheme. Without a usable
+/// [baseUrl] (none, or no scheme) the origin cannot be checked, so only a
+/// relative URL gets [headers]: an absolute one could name any host.
 Map<String, String>? authHeadersForUrl(
   String? url,
   Map<String, String>? headers,
   String? baseUrl,
 ) {
   if (headers == null) return null;
-  final base = baseUrl?.trim() ?? '';
-  if (base.isEmpty) return headers;
   var target = Uri.tryParse(url?.trim() ?? '');
   if (target == null) return null;
   // A relative path resolves against the base, so it is same-origin.
   if (!target.hasScheme && target.host.isEmpty) return headers;
-  final origin = Uri.tryParse(base);
-  if (origin == null || !origin.hasScheme) return headers;
+  final base = baseUrl?.trim() ?? '';
+  final origin = base.isEmpty ? null : Uri.tryParse(base);
+  if (origin == null || !origin.hasScheme) return null;
   // A protocol-relative URL (`//cdn.example.com/x.jpg`) names a host: give it
   // the site's scheme and compare it like any absolute URL.
   if (!target.hasScheme) target = origin.resolveUri(target);

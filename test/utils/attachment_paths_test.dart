@@ -181,13 +181,22 @@ void main() {
       expect(authHeadersForUrl('https://SITE.example.com/a', auth, base), auth);
     });
 
-    test(
-      'without a base the origin cannot be checked: headers pass through',
-      () {
-        expect(authHeadersForUrl('https://h/a', auth, null), auth);
-        expect(authHeadersForUrl('https://h/a', auth, '  '), auth);
-      },
-    );
+    // Review: passing the headers through when the base is unknown failed
+    // open, sending the session token to whatever host an absolute URL named.
+    test('without a usable base an absolute URL gets no headers', () {
+      expect(authHeadersForUrl('https://h/a', auth, null), isNull);
+      expect(authHeadersForUrl('https://h/a', auth, '  '), isNull);
+      expect(
+        authHeadersForUrl('https://h/a', auth, 'site.example.com'),
+        isNull,
+      );
+      expect(authHeadersForUrl('//cdn.example.com/x.jpg', auth, null), isNull);
+    });
+
+    test('without a base a relative URL still gets the headers', () {
+      expect(authHeadersForUrl('/private/files/a.png', auth, null), auth);
+      expect(authHeadersForUrl('/files/a.png', auth, '  '), auth);
+    });
 
     test('null headers stay null', () {
       expect(authHeadersForUrl('$base/a', null, base), isNull);
