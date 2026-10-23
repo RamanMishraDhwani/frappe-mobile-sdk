@@ -67,7 +67,7 @@ DocField _field() => DocField(
 );
 
 final List<LinkOptionEntity> _tenRows = [
-  for (var i = 0; i < 10; i++) _opt('$i', 'SBIN000000$i'),
+  for (var i = 0; i < 10; i++) _opt('$i', 'ITEM000000$i'),
 ];
 
 void main() {
@@ -165,7 +165,7 @@ void main() {
   testWidgets('a single-row first page (complete) still auto-selects', (
     tester,
   ) async {
-    final svc = _ServerSearchService(firstPage: [_opt('PC-1', 'Only Centre')]);
+    final svc = _ServerSearchService(firstPage: [_opt('S-1', 'Only Site')]);
     final picked = <dynamic>[];
     await tester.pumpWidget(
       _wrap(
@@ -177,7 +177,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(picked, ['PC-1']);
+    expect(picked, ['S-1']);
   });
 
   testWidgets('a single search result is not auto-selected', (tester) async {

@@ -14,7 +14,7 @@ LinkOptionEntity _opt(String name, [String? label]) => LinkOptionEntity(
 
 /// Ten first-page options; the wanted row is not among them.
 final List<LinkOptionEntity> _page = [
-  for (var i = 0; i < 10; i++) _opt('BI-0000$i', 'SBIN000000$i'),
+  for (var i = 0; i < 10; i++) _opt('IT-0000$i', 'ITEM000000$i'),
 ];
 
 class _Search {
@@ -63,7 +63,7 @@ void main() {
   ) async {
     final search = _Search();
     await _pump(tester, search: search);
-    for (final t in ['BA', 'BAR', 'ACME', 'ACME0', 'ACME0W']) {
+    for (final t in ['AC', 'ACM', 'ACME', 'ACME0', 'ACME0W']) {
       await _type(tester, t);
       await tester.pump(const Duration(milliseconds: 100));
     }
@@ -89,26 +89,26 @@ void main() {
       'row is shown', (tester) async {
     final search = _Search();
     await _pump(tester, search: search);
-    await _type(tester, 'bi-00003');
+    await _type(tester, 'it-00003');
     await tester.pump(const Duration(seconds: 1));
     expect(search.calls, isEmpty);
-    expect(find.text('SBIN0000003'), findsOneWidget);
+    expect(find.text('ITEM0000003'), findsOneWidget);
   });
 
   testWidgets('an exact LABEL match still searches: labels repeat, and a '
       'namesake can be past the first page', (tester) async {
     final search = _Search();
     await _pump(tester, search: search);
-    await _type(tester, 'sbin0000003');
+    await _type(tester, 'item0000003');
     await tester.pump(const Duration(milliseconds: 500));
-    expect(search.calls, ['sbin0000003']);
-    search.pending['sbin0000003']!.complete([
-      _opt('BI-00003', 'SBIN0000003'),
-      _opt('BI-99003', 'SBIN0000003 (other branch)'),
+    expect(search.calls, ['item0000003']);
+    search.pending['item0000003']!.complete([
+      _opt('IT-00003', 'ITEM0000003'),
+      _opt('IT-99003', 'ITEM0000003 (second copy)'),
     ]);
     await tester.pump();
-    expect(find.text('SBIN0000003'), findsOneWidget);
-    expect(find.text('SBIN0000003 (other branch)'), findsOneWidget);
+    expect(find.text('ITEM0000003'), findsOneWidget);
+    expect(find.text('ITEM0000003 (second copy)'), findsOneWidget);
   });
 
   testWidgets('an empty server reply never hides the local matches', (
@@ -116,11 +116,11 @@ void main() {
   ) async {
     final search = _Search();
     await _pump(tester, search: search);
-    await _type(tester, 'SBIN000000');
+    await _type(tester, 'ITEM000000');
     await tester.pump(const Duration(milliseconds: 500));
-    search.pending['SBIN000000']!.complete(const []);
+    search.pending['ITEM000000']!.complete(const []);
     await tester.pump();
-    expect(find.text('SBIN0000001'), findsOneWidget);
+    expect(find.text('ITEM0000001'), findsOneWidget);
     expect(find.text('No matching options'), findsNothing);
   });
 
@@ -142,16 +142,16 @@ void main() {
         ),
       ),
     );
-    await tester.pumpWidget(build('district=X', _page));
+    await tester.pumpWidget(build('group=X', _page));
     await _type(tester, 'ACME');
     await tester.pump(const Duration(milliseconds: 500));
     // Same filters, new list instance (e.g. a picked row was kept).
-    await tester.pumpWidget(build('district=X', [..._page]));
+    await tester.pumpWidget(build('group=X', [..._page]));
     search.pending['ACME']!.complete([_opt('77', 'ACME0OLD')]);
     await tester.pump();
     expect(find.text('ACME0OLD'), findsOneWidget);
     // Filters changed: the X rows are wrong now and the text is re-searched.
-    await tester.pumpWidget(build('district=Y', _page));
+    await tester.pumpWidget(build('group=Y', _page));
     await tester.pump();
     expect(find.text('ACME0OLD'), findsNothing);
     await tester.pump(const Duration(milliseconds: 500));
@@ -173,15 +173,15 @@ void main() {
       'local rows show meanwhile', (tester) async {
     final search = _Search();
     await _pump(tester, search: search);
-    await _type(tester, 'SBIN');
-    expect(find.text('SBIN0000001'), findsOneWidget);
+    await _type(tester, 'ITEM');
+    expect(find.text('ITEM0000001'), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 500));
-    expect(search.calls, ['SBIN']);
-    search.pending['SBIN']!.complete([_opt('77', 'SBIN0099999')]);
+    expect(search.calls, ['ITEM']);
+    search.pending['ITEM']!.complete([_opt('77', 'ITEM0099999')]);
     await tester.pump();
     // The server's row first; the local matches stay below it.
-    expect(find.text('SBIN0099999'), findsOneWidget);
-    expect(find.text('SBIN0000001'), findsOneWidget);
+    expect(find.text('ITEM0099999'), findsOneWidget);
+    expect(find.text('ITEM0000001'), findsOneWidget);
   });
 
   testWidgets('a slow reply to an older text never replaces a newer one', (
