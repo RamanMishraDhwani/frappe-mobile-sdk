@@ -1261,7 +1261,9 @@ class AuthService {
     if (row == null) return null;
     if (row.accessToken.isNotEmpty || row.refreshToken.isNotEmpty) {
       if (await _writeMobileSecrets(row)) {
-        await _database!.authTokenDao.insertToken(_withoutSecrets(row));
+        await _database!.authTokenDao.replaceTokenScrubbingOld(
+          _withoutSecrets(row),
+        );
         dev.log(
           'Moved stored login token from the database to secure storage',
           name: 'Auth',
