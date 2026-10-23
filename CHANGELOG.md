@@ -5,6 +5,118 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Online-first Link pickers search the server, so every record of a large target is reachable.**
+  - Until now a picker loaded the first 5,000 rows of its target once and filtered them in memory. The typed text never reached the server, so any record past that page could not be found, and nothing said so.
+  - In online-first mode (offline mode disabled) a picker now:
+    - loads the first 10 options;
+    - filters them as the user types;
+    - when the text does not resolve among them, asks the server 500 ms after the last keystroke.
+  - The search matches `LIKE %text%` against `name`, the title field and `search_fields`, which is what Desk's Link control matches. It goes through the same `frappe.client.get_list` path as the prefetch, so labels are built as before.
+  - `get_list` returns one page of matches (20 by default) in the doctype's sort order, by default the most recently modified first. When that page comes back full, a second request asks for exact matches (`=` on the same columns, same filters), so an exact docname or title match past that page is still listed.
+    - Results are ranked: exact docname or label first, then docnames starting with the text, then the rest in server order.
+    - Desk ranks by relevance in SQL. The SDK sends no `order_by` expression, because the typed text would have to go inside it.
+    - `=` follows the database collation: case-insensitive on MariaDB's default, case-sensitive on Postgres.
+  - **When a request fails**, the picker loads the full list (`getLinkOptions`, the prefetch used before this change), switches to filtering it in memory and stops searching the server.
+    - This applies to a failed first page and to a failed search; for a failed search, the typed text filters the full list at once.
+    - If the full list fails too, a failed first page shows "No options available" with Refresh, and a failed search shows "Search failed. Tap to retry" beside the first page's matches.
+    - The same happens when the full list comes back empty beside a non-empty first page, so the picker never stops searching because of an empty answer.
+  - **Trade-off on a bad connection.** In online-first mode there is no local copy, so the full list is a server request as well.
+    - The fallback helps when the search itself fails (a refused search column, a slow `LIKE`, a dropped request) but a plain list still loads.
+    - With no connection at all, a picker offers only its first 10 options and the rows it already found.
+    - Before this change, a picker that loaded its full list before the connection dropped kept all of it.
+    - Pickers that must work through outages should use offline mode, or keep the prefetch with `LinkSearchPolicy(prefetchOnlyDoctypes: {...})`.
+  - The text resolves locally only when the first page held every match (fewer than 10 rows) or when it equals an option's docname.
+    - A label match does not stop the search, because labels repeat and a namesake can be past the first page.
+    - A partial match does not stop it either.
+  - Server rows come first, followed by any local matches the server did not return, so a reply never hides a row the user just saw. The inline picker now also matches docnames, as the dialog already did.
+  - A target with fewer than 10 matching rows behaves exactly as before, including the auto-select of a single option and the "No options available" + Refresh state for zero rows.
+  - Pickers on the same target and filters share one first-page request, reused for 30 seconds and dropped when a sync finishes. The form-load prefetch skips server-searched targets.
+  - Only the newest load of a picker applies its result.
+  - A value set after the first page loaded gets its title.
+  - If offline mode is switched on while a picker is open, it searches the device, on docname, title field and `search_fields`.
+  - A translated doctype keeps the full in-memory list.
+  - Offline-first reads are unchanged.
+- **Migration.** Opt out with `FrappeSDK(linkSearchPolicy: LinkSearchPolicy.disabled)`, or per doctype with `LinkSearchPolicy(prefetchOnlyDoctypes: {...})`.
+  - A `LinkOptionService` subclass built on `withoutResolver()` keeps the full prefetch unless it forwards `usesServerSearch`, `searchPolicy` and `searchLinkOptions`.
+  - `getLinkOptions` is unchanged and still returns up to 5,000 rows to direct callers.
+  - A test double that `implements LinkOptionService` and does not stub `usesServerSearch` (a mocktail `Mock` returns null) keeps the prefetch path, because the picker treats an unanswerable service as "no server search". Stub it to `true` to exercise search.
+  - A subclass on the normal constructor that overrides `getLinkOptions` is no longer called by an online-first picker, which uses `searchLinkOptions`. Override `searchLinkOptions` as well, or opt the doctype out with `prefetchOnlyDoctypes`.
+  - A hand-written fake that `implements LinkOptionService` no longer compiles until it adds `usesServerSearch`, `searchPolicy` and `searchLinkOptions`.
+  - `LinkSearchPolicy` asserts `pageLength >= 1` and `prefetchSize >= 2`: Frappe reads `limit_page_length=0` as no limit, and a one-row first page would auto-select a row that may not be the only match. The asserts only fire in debug builds, so the picker also clamps both values where it reads them. A direct `searchLinkOptions(pageLength: 0)` call is not clamped.
+  - A single-subscription `syncComplete$` stream is now wrapped with `asBroadcastStream()` by `LinkOptionService`, so the first-page cache is cleared on every sync and more than one picker can listen. A host that also listens to the raw stream it passed in now gets "Stream has already been listened to" at its own `listen`; pass a broadcast stream instead, as `FrappeSDK` does.
+
+- **Defaults apply to NEW documents only. They are typed as Desk types them, and a Select with no default starts on its first option.**
+  - Defaults are cast as `set_default_values` casts them: Check/Int via `cint`, Float/Currency via `flt`. A Check default of `"0"` now starts as `0`, not as the truthy string `"0"`.
+  - Desk applies `set_default_values` to new documents only, and so does the SDK, for every default. A saved document's empty field (Frappe omits null fields from the document it returns) or a field the user clears is not given its `default`, a resolved `__user` / `now` token, or a Select's first option, so the next save cannot write a value nobody chose.
+  - New: `isNewDocumentData` decides this from `name` / `server_name` / `mobile_uuid`; `typedDefaultValue` gains `newDocument` (false gives null). `FormController.reset(initialData:)` decides it again from the data it is given.
+- **Saved numbers are NOT rounded to their precision unless the host opts in with `FrappeFormBuilder(roundNumbersOnSave: true)` (also on `FormController`). This is the 2.0.0-beta.4 behaviour.**
+  - Desk rounds as the user types, so its scripts compute related values from the rounded figure. Rounding only at save, beside client-script values computed from the unrounded figure, made server checks refuse saves that beta.4 accepted.
+    - `abs(new_qty - (current + adjusted)) > 1e-6` refused a 3-decimal quantity.
+    - A value clamped to `flt(owner_total, 6)` was rounded UP above the limit it had been clamped to.
+  - Date/Datetime/Time formatting at save is unchanged.
+  - A host that relied on the pre-release rounding sets the flag.
+
+### Added
+
+- **`LinkSearchPolicy`**: first-page size, minimum characters, debounce, page length and per-doctype opt-out. Also new: **`LinkOptionService.usesServerSearch`** and **`LinkOptionService.searchLinkOptions`**, plus `SearchableSelect`'s `onSearch` / `optionsComplete` / `onPickOption`.
+  - `pageLength` must be at least 1, because Frappe reads `limit_page_length=0` as "no limit".
+  - `prefetchSize` must be at least 2: with a first page of 1, a lone option cannot be told from the first of many, and it was auto-selected.
+  - Both are asserted. A first page that may not hold every match is never auto-selected.
+- **A log line when `getLinkOptions` hits its 5,000-row cap**, once per doctype, so a truncated list is no longer silent.
+- **`cannot_add_rows` and `cannot_delete_rows` on Table fields, as Frappe Desk honours them.**
+  - `DocField` now models both flags (`cannotAddRows`, `cannotDeleteRows`). They are parsed, serialised and carried through the form's effective-props copy.
+  - `ChildTableField` hides **Add Row** for the first, and the row delete icon and the edit sheet's **Remove** for the second. Rows stay editable.
+  - Until now Add Row, delete and edit shared one `enabled && !readOnly` gate, so "fixed rows, editable values", which Desk expresses with these two flags (`frappe/public/js/frappe/form/grid.js`), meant replacing the widget.
+  - Sites usually set them with a Property Setter, which reaches the meta the SDK reads. A Desk-only `frm.set_df_property` does not.
+- **Opt-in server-side image optimisation, as Frappe Desk's uploader does it.** `ImageUploadSettings.serverOptimize = true` sends `optimize` for an image over 200 KB that is not an SVG, so the server stores a copy fitted into 1024x768 at quality 85 (`frappe/handler.py` `upload_file`, `frappe/utils/image.py`). Off by default, which leaves stored files exactly as before: Frappe's `upload_file` API only optimises when the client asks. `uploadFile(optimize: true/false)` forces it for one upload.
+- **Opt-in on-device photo size limit for image fields.** `ImageUploadSettings.captureLimits = const ImageCaptureLimits()` shrinks a photo taken or picked in an `Attach Image` field by a whole factor, keeping the long edge at 1920 px or more (JPEG quality 92), before it is stored or uploaded. Off by default.
+  - Flutter's image decoder shrinks while decoding, so the full-size photo is never held in memory. The size is read from the JPEG header first, and a photo that stays as it is (8 MP and smaller) is not decoded at all.
+  - Camera rotation is applied, other EXIF (time, GPS) is kept, and the file name is unchanged.
+  - The image field shows progress and turns its buttons off while a picked photo is prepared, stored and uploaded.
+  - Do not combine it with `serverOptimize`: the server's resize ignores the EXIF rotation, so an upright portrait photo would be cut to 512x768.
+  - `Attach` fields are not covered.
+
+### Fixed
+
+- **`getLinkOptionsOffline(query:)` ignored the text on a doctype with no title field, and matched only the title on the others.**
+  - With no `title_field`, the unfiltered list came back. With one, a docname or a `search_fields` value never matched.
+  - The query now matches `LIKE %text%` against the docname (`server_name`, or `mobile_uuid` for a row not pushed yet), the title field and `search_fields`, ORed, as the server search does.
+  - The title field is matched whatever its type, as before, even a type Desk does not search (Phone, Autocomplete). On a doctype with a title field, the results are a superset of the previous title-only matches.
+- **A saved Rating showed no stars, and a tap on a star was undone.**
+  - Frappe stores a Rating as the fraction `stars ÷ max`: 3 of 5 is `0.6` (`controls/rating.js`). `RatingField` already reads and writes that fraction, but `FieldNormalizer` parsed a Rating as an `int`, and `int.tryParse('0.6')` is `null`. So every stored fraction normalized to `null` and the form's post-frame patch cleared the stars.
+  - In reactive mode, a saved rating opened with no stars. In both modes, a tap was undone by the next patch.
+  - A Rating now normalizes to a `double`: ints and numeric strings still resolve, and empty or non-numeric input is still `null`.
+- **Two Table fields pointing at the same child doctype got each other's rows.**
+  - `OfflineRepository.attachChildRows` read rows by `parent_uuid` alone. Those rows share one local table, and only `parentfield` tells them apart, so each field was handed the union.
+  - Saving wrote the union back under each field, the duplication grew with every edit, and it reached the server on the next push.
+  - The read now filters by `parentfield` too, as the server's `load_children_from_db` and every other child-row read and write in the SDK already do.
+- **The session token was sent to whatever host a file URL named.**
+  - `ImageField` (preview and full-screen view), `AttachField` (view button) and the media resolver's fetcher in `FormScreen` sent the session headers with every file request. A file value can be an absolute URL on object storage or a CDN, so the token reached a third party. The fetcher runs first whenever a form opens online, so it was the main path.
+  - Object stores also reject a foreign `Authorization` header, which made those files fail with HTTP 400.
+  - New `authHeadersForUrl` keeps the headers for relative URLs and for URLs whose scheme, host and port match `fileUrlBase`, and drops them otherwise. A protocol-relative URL (`//host/x`) is compared with the base's scheme. With no usable `fileUrlBase` (none, or no scheme) the origin can't be checked, so only a relative URL gets the headers; an absolute one gets none. Pass `fileUrlBase` to load private files from absolute URLs on the Frappe host.
+- **Saving while a picked photo is still uploading no longer drops the photo.** An image field's pick, shrink and upload run after the tap, so a form saved in that window read the field from before the photo landed and stored the record without it (or with the previous photo). `FrappeFormBuilder` now waits for that work to finish before it reads the values, in legacy and reactive mode, and in the row form of a child table.
+  - A second Save press while it waits is ignored, so the record is saved once.
+  - A photo that fails to upload does not block the save: the wait ends and the form saves as the field stands.
+  - A form with nothing uploading saves at once, as before.
+- **A photo or file was lost when its tab was left while it uploaded.** A tab that is off screen is disposed, so when the upload finished, the field's state was gone: the update threw, `onChanged` never ran, and the record saved without the new file. A replaced file had already been reclaimed. `ImageField` and `AttachField` now hand the new value to `onChanged` first, update the field only while it is mounted, and reclaim the replaced file only after the new one is committed. A failing reclaim is logged and no longer reported as a failed pick.
+- **`non_negative` was not enforced in reactive (`FormController`) mode.** A negative value in a non-negative Int, Float, Currency or Percent field passed validation, saved locally and was refused at sync. `FormController` validation now refuses it with the same message as the legacy form.
+
+### Changed
+
+- The comment on Rating's re-tap-clears behaviour now cites Frappe Desk's Rating control instead of a client app's component. No code change.
+
+### Security
+
+- **Mobile login tokens are no longer stored in the SQLite database.** The access and refresh tokens from `login`, `verifyLoginOtp`, `persistExternalLoginResponse` and the refresh path were written in plain text to the `auth_tokens` table, so a copy of the database file carried a live session. They are now kept only in `FlutterSecureStorage` (as the OAuth tokens and API key already were); the `auth_tokens` row keeps only the user, full name and issue time, with its token columns written empty. Existing installs migrate on first use: a row that still holds tokens has them copied to secure storage and the columns blanked. `logout` and a definitively rejected refresh now delete the secure-storage entries as well as the row. The public API is unchanged.
+  - When secure storage refuses a write (on Android, after a backup restore or a Keystore reset), the entries are deleted and the write is retried once. If it still fails, login and refresh keep the token in memory for that session only, never in the database, and the next cold start asks for a login. The migration keeps using the row's token for the session and tries again on the next read.
+  - The migration blanks the row with `secure_delete` on and then runs a TRUNCATE checkpoint, so the old token bytes are not left in free pages or the WAL.
+  - `AuthService.forTesting` takes an optional `storage`.
+- **Tokens and passwords are no longer logged.** `login` and `verifyLoginOtp` logged the full access token through `dart:developer` `log`. Those lines are removed. The debug-mode request tracer (`[Frappe API]`) printed request bodies verbatim, including the login password, the OTP and the refresh token; credential-named fields (`password`, `otp`, `*token*`, `*secret*`, `api_key`, and a whole key named `key` or `code`) are now replaced with `REDACTED` in traced bodies, query parameters and URLs. String bodies are covered too: form-encoded and JSON text, JSON held as a string inside a map or query value, and error response bodies.
+
 ## [2.0.0-beta.4] - 2026-09-21
 
 ### Changed
