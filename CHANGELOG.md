@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A `LinkOptionService` subclass built on `withoutResolver()` keeps the full prefetch unless it forwards `usesServerSearch`, `searchPolicy` and `searchLinkOptions`.
   - `getLinkOptions` is unchanged and still returns up to 5,000 rows to direct callers.
   - A test double that `implements LinkOptionService` and does not stub `usesServerSearch` (a mocktail `Mock` returns null) keeps the prefetch path, because the picker treats an unanswerable service as "no server search". Stub it to `true` to exercise search.
+  - A subclass on the normal constructor that overrides `getLinkOptions` is no longer called by an online-first picker, which uses `searchLinkOptions`. Override `searchLinkOptions` as well, or opt the doctype out with `prefetchOnlyDoctypes`.
+  - A hand-written fake that `implements LinkOptionService` no longer compiles until it adds `usesServerSearch`, `searchPolicy` and `searchLinkOptions`.
+  - `LinkSearchPolicy` asserts `pageLength >= 1` and `prefetchSize >= 2`: Frappe reads `limit_page_length=0` as no limit, and a one-row first page would auto-select a row that may not be the only match.
 
 - **Defaults apply to NEW documents only. They are typed as Desk types them, and a Select with no default starts on its first option.**
   - Defaults are cast as `set_default_values` casts them: Check/Int via `cint`, Float/Currency via `flt`. A Check default of `"0"` now starts as `0`, not as the truthy string `"0"`.
@@ -93,11 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The session token was sent to whatever host a file URL named.**
   - `ImageField` (preview and full-screen view), `AttachField` (view button) and the media resolver's fetcher in `FormScreen` sent the session headers with every file request. A file value can be an absolute URL on object storage or a CDN, so the token reached a third party. The fetcher runs first whenever a form opens online, so it was the main path.
   - Object stores also reject a foreign `Authorization` header, which made those files fail with HTTP 400.
-  - New `authHeadersForUrl` keeps the headers for relative URLs and for URLs whose scheme, host and port match `fileUrlBase`, and drops them otherwise. A protocol-relative URL (`//host/x`) is compared with the base's scheme. With no `fileUrlBase` the origin can't be checked, and the headers pass through as before.
+  - New `authHeadersForUrl` keeps the headers for relative URLs and for URLs whose scheme, host and port match `fileUrlBase`, and drops them otherwise. A protocol-relative URL (`//host/x`) is compared with the base's scheme. With no usable `fileUrlBase` (none, or no scheme) the origin can't be checked, so only a relative URL gets the headers; an absolute one gets none. Pass `fileUrlBase` to load private files from absolute URLs on the Frappe host.
 - **Saving while a picked photo is still uploading no longer drops the photo.** An image field's pick, shrink and upload run after the tap, so a form saved in that window read the field from before the photo landed and stored the record without it (or with the previous photo). `FrappeFormBuilder` now waits for that work to finish before it reads the values, in legacy and reactive mode, and in the row form of a child table.
   - A second Save press while it waits is ignored, so the record is saved once.
   - A photo that fails to upload does not block the save: the wait ends and the form saves as the field stands.
   - A form with nothing uploading saves at once, as before.
+- **A photo or file was lost when its tab was left while it uploaded.** A tab that is off screen is disposed, so when the upload finished, the field's state was gone: the update threw, `onChanged` never ran, and the record saved without the new file. A replaced file had already been reclaimed. `ImageField` and `AttachField` now hand the new value to `onChanged` first, update the field only while it is mounted, and reclaim the replaced file only after the new one is committed. A failing reclaim is logged and no longer reported as a failed pick.
+- **`non_negative` was not enforced in reactive (`FormController`) mode.** A negative value in a non-negative Int, Float, Currency or Percent field passed validation, saved locally and was refused at sync. `FormController` validation now refuses it with the same message as the legacy form.
 
 ### Changed
 
