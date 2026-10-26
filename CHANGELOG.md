@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`MetaService.ensureUpToDate` never added the columns a new schema brought, and reported the doctype as `updated`.**
+  - Its default fetcher was `getMeta(dt, forceRefresh: true)`, which saves the fresh meta while fetching it. `ensureUpToDate` then read that meta back as the "old" side, diffed the new schema against itself, skipped `MetaMigration.apply`, and still advanced `meta_watermark`, so no later call retried. A field added on the server never got its column on an existing install, and its values were dropped on pull.
+  - The old meta is now read before the fetcher runs, so a fetcher that saves can no longer empty the diff.
+  - The default fetcher no longer saves: the meta is written only after the migration succeeds. A failed `ALTER` now leaves the old meta and watermark in place, and the next call retries. Saving first would have made that retry diff new-vs-new as well.
+  - The `getMeta` in-memory entry is evicted after the write. With a host-supplied `metaFetcher`, `getMeta` kept serving the old fields until a restart.
 - **`getLinkOptionsOffline(query:)` ignored the text on a doctype with no title field, and matched only the title on the others.**
   - With no `title_field`, the unfiltered list came back. With one, a docname or a `search_fields` value never matched.
   - The query now matches `LIKE %text%` against the docname (`server_name`, or `mobile_uuid` for a row not pushed yet), the title field and `search_fields`, ORed, as the server search does.

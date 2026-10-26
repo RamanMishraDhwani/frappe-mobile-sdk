@@ -791,6 +791,18 @@ class MetaService {
   /// NOT abort the rest of the batch. Returns a [MetaUpdateResult]
   /// summarising successes and per-doctype failures so the caller can
   /// surface them to the user or retry later.
+  ///
+  /// The stored meta is the "before" side of the diff, so nothing may
+  /// overwrite it until the migration has run:
+  /// - the old meta is read BEFORE [metaFetcher] runs, so a fetcher that saves
+  ///   (e.g. `getMeta(dt, forceRefresh: true)`) cannot turn the diff into
+  ///   new-vs-new;
+  /// - the default fetcher does not save at all, so a failed ALTER leaves the
+  ///   old meta and the old watermark in place and the next call retries.
+  ///   Saving first would make that retry diff new-vs-new and skip the column
+  ///   for good.
+  /// The in-memory LRU entry is evicted after the write, so [getMeta] serves
+  /// the new schema whichever fetcher was used.
   Future<MetaUpdateResult> ensureUpToDate(
     List<String> doctypes, {
     BulkWatermarkProbe? probe,
@@ -799,7 +811,9 @@ class MetaService {
     void Function(double progress, String step)? onProgress,
   }) async {
     final dao = _database.doctypeMetaDao;
-    final fetchMeta = metaFetcher ?? (dt) => getMeta(dt, forceRefresh: true);
+    final fetchMeta =
+        metaFetcher ??
+        (dt) async => DocTypeMeta.fromJson(await _fetchMetaFromServer(dt));
     final serverMarks = await refreshWatermarks(
       doctypes,
       probe: probe,
@@ -838,8 +852,8 @@ class MetaService {
           continue;
         }
 
-        final fresh = await fetchMeta(dt);
         final oldJson = await dao.getMetaJson(dt);
+        final fresh = await fetchMeta(dt);
         final old = (oldJson == null || oldJson.isEmpty || oldJson == '{}')
             ? DocTypeMeta(name: dt, fields: const [])
             : DocTypeMeta.fromJson(jsonDecode(oldJson) as Map<String, dynamic>);
@@ -859,6 +873,7 @@ class MetaService {
         // and downstream caches (OfflineRepository) are invalidated — a wired
         // ensureUpToDate must not write fresh schema without evicting them.
         await _upsertMetaJson(dt, fresh.toJson());
+        clearDocTypeCache(dt);
         await dao.setMetaWatermark(dt, newMark);
         final dg = DependencyGraphBuilder.buildOutgoing(fresh);
         await dao.setDepGraphJson(dt, jsonEncode(dg.toJson()));

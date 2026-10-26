@@ -900,4 +900,150 @@ void main() {
       expect(refreshed, ['Customer']);
     });
   });
+
+  // The diff's "before" side is the STORED meta, so nothing may overwrite it
+  // before the migration runs. The default fetcher used to be
+  // `getMeta(forceRefresh: true)`, which saves while fetching: the diff came
+  // out new-vs-new, no column was added, the watermark still advanced, and the
+  // result said `updated`. Every test above injects a `metaFetcher`, which is
+  // why none of them caught it — these drive the default one over HTTP.
+  group('MetaService.ensureUpToDate adds the columns a new schema brings', () {
+    const dt = 'Probe';
+    const table = 'docs__probe';
+    Map<String, dynamic> field(String n) => {
+      'fieldname': n,
+      'fieldtype': 'Data',
+      'label': n,
+    };
+    final oldSchema = {
+      'name': dt,
+      'fields': [field('title')],
+    };
+    final newSchema = {
+      'name': dt,
+      'fields': [field('title'), field('new_field')],
+    };
+
+    late AppDatabase db;
+    late MetaService svc;
+    late int getdoctypeCalls;
+
+    setUp(() async {
+      getdoctypeCalls = 0;
+      db = await AppDatabase.inMemoryDatabase();
+      svc = MetaService(
+        FrappeClient(
+          'https://fake.test',
+          httpClient: MockClient((req) async {
+            getdoctypeCalls++;
+            return http.Response(
+              jsonEncode({
+                'docs': [newSchema],
+              }),
+              200,
+            );
+          }),
+        ),
+        db,
+      );
+      await db.doctypeMetaDao.insertDoctypeMeta(
+        DoctypeMetaEntity(
+          doctype: dt,
+          modified: 'old',
+          serverModifiedAt: null,
+          isMobileForm: true,
+          metaJson: jsonEncode(oldSchema),
+        ),
+      );
+      await db.doctypeMetaDao.setTableName(dt, table);
+      await db.doctypeMetaDao.setMetaWatermark(dt, 'mark-old');
+    });
+
+    Future<void> createTable() => db.rawDatabase.execute(
+      'CREATE TABLE $table (mobile_uuid TEXT PRIMARY KEY, title TEXT)',
+    );
+
+    Future<Set<String>> columns() async => {
+      for (final r in await db.rawDatabase.rawQuery(
+        'PRAGMA table_info($table)',
+      ))
+        r['name']! as String,
+    };
+
+    Future<List<String?>> storedFields() async {
+      final json = jsonDecode((await db.doctypeMetaDao.getMetaJson(dt))!);
+      return DocTypeMeta.fromJson(
+        json as Map<String, dynamic>,
+      ).fields.map((f) => f.fieldname).toList();
+    }
+
+    test('with the default fetcher', () async {
+      await createTable();
+
+      final result = await svc.ensureUpToDate(const [
+        dt,
+      ], watermarkFetcher: (_) async => 'mark-new');
+
+      expect(result.updated, [dt]);
+      expect(await columns(), contains('new_field'));
+      expect(await db.doctypeMetaDao.getMetaWatermark(dt), 'mark-new');
+      expect(await storedFields(), ['title', 'new_field']);
+      expect(getdoctypeCalls, 1, reason: 'one schema download per doctype');
+    });
+
+    test('with a fetcher that saves the meta while fetching it', () async {
+      await createTable();
+
+      await svc.ensureUpToDate(
+        const [dt],
+        watermarkFetcher: (_) async => 'mark-new',
+        metaFetcher: (d) => svc.getMeta(d, forceRefresh: true),
+      );
+
+      expect(await columns(), contains('new_field'));
+    });
+
+    test('on the next call when the ALTER failed', () async {
+      // Registered table missing → ALTER TABLE throws.
+      final failed = await svc.ensureUpToDate(const [
+        dt,
+      ], watermarkFetcher: (_) async => 'mark-new');
+
+      expect(failed.failed.keys, [dt]);
+      expect(
+        await storedFields(),
+        ['title'],
+        reason: 'the old meta must survive, or the retry diffs new-vs-new',
+      );
+      expect(await db.doctypeMetaDao.getMetaWatermark(dt), 'mark-old');
+
+      await createTable();
+      final retried = await svc.ensureUpToDate(const [
+        dt,
+      ], watermarkFetcher: (_) async => 'mark-new');
+
+      expect(retried.updated, [dt]);
+      expect(await columns(), contains('new_field'));
+    });
+
+    test('and getMeta() serves the new schema afterwards', () async {
+      await createTable();
+      final before = await svc.getMeta(dt); // warms the in-memory LRU
+      expect(before.fields.map((f) => f.fieldname), ['title']);
+
+      // A fetcher that never touches getMeta, so only the eviction in
+      // ensureUpToDate can refresh the LRU.
+      await svc.ensureUpToDate(
+        const [dt],
+        watermarkFetcher: (_) async => 'mark-new',
+        metaFetcher: (_) async => DocTypeMeta.fromJson(newSchema),
+      );
+
+      final after = await svc.getMeta(dt);
+      expect(after.fields.map((f) => f.fieldname), [
+        'title',
+        'new_field',
+      ]);
+    });
+  });
 }
